@@ -7,8 +7,9 @@
 set -euo pipefail
 
 # ---------------- Steam command (Big Picture) ----------------
+# Optional override:
+#   STEAM_CMD_OVERRIDE='steam -gamepadui -nochatui'
 if [[ "${STEAM_CMD_OVERRIDE-}" != "" ]]; then
-  # Example: STEAM_CMD_OVERRIDE='steam -gamepadui -nochatui'
   read -ra STEAM_CMD_ARR <<<"$STEAM_CMD_OVERRIDE"
 else
   STEAM_CMD_ARR=(steam -gamepadui)
@@ -33,6 +34,12 @@ STRETCH_FLAG="none"   # "none" | "stretch"
 
 G_FPS=0               # gamescope -r (target display refresh, Hz; 0 = unlimited)
 
+# VRR / HDR / Steam flags
+ADAPTIVE_SYNC=0          # 0/1 -> --adaptive-sync
+ENABLE_GAMESCOPE_HDR=0   # 0/1 -> --hdr-enabled (+ ITM)
+GAMESCOPE_HDR_NITS=1000  # used with --hdr-itm-target-nits
+STEAM_USE_STEAMOS_FLAG=0 # 0/1 -> add -steamos to Steam
+
 MISSING_CMDS=()
 HAVE_CONFIG=0
 
@@ -41,6 +48,7 @@ FLAG_HELP=0
 FLAG_NEW=0
 FLAG_LAST=0
 FLAG_PRINT=0
+FLAG_KILL=0
 
 # ---------------- helpers ----------------
 require_cmd() {
@@ -99,14 +107,16 @@ Options:
   -n        New interactive setup, ignore saved config.
   -l        Use last saved config immediately (no questions).
   -p        Print saved config summary and exit.
+  -k        Kill any running gamescope processes and exit.
 
 Environment:
   STEAM_CMD_OVERRIDE='steam -gamepadui'
-      Override the Steam command used (default: steam -gamepadui).
+      Override the Steam command used (default is auto-chosen native/flatpak).
 
 Config:
   $CONFIG_FILE
-      Stores DRM output, resolution, stretch flag and gamescope target display rate.
+      Stores DRM output, resolution, stretch flag, gamescope display rate,
+      VRR / HDR settings and Steam type/flags.
 EOF
 }
 
@@ -117,12 +127,16 @@ print_config_summary() {
   fi
 
   echo "Saved smtty config ($CONFIG_FILE):"
-  echo "  Steam type:             ${STEAM_TYPE:-native}"
-  echo "  DRM output:             $DRM_SHORT"
-  echo "  Native mode:            $DRM_NATIVE_MODE"
-  echo "  Game resolution:        ${GAME_W}x${GAME_H}"
-  echo "  Stretch flag:           $STRETCH_FLAG"
-  echo "  gamescope display rate: $G_FPS Hz (0 = unlimited)"
+  echo "  Steam type:               ${STEAM_TYPE:-native}"
+  echo "  Steam -steamos flag:      ${STEAM_USE_STEAMOS_FLAG}"
+  echo "  DRM output:               $DRM_SHORT"
+  echo "  Native mode:              $DRM_NATIVE_MODE"
+  echo "  Game resolution:          ${GAME_W}x${GAME_H}"
+  echo "  Stretch flag:             $STRETCH_FLAG"
+  echo "  gamescope display rate:   $G_FPS Hz (0 = unlimited)"
+  echo "  gamescope adaptive-sync:  $ADAPTIVE_SYNC"
+  echo "  gamescope HDR enabled:    $ENABLE_GAMESCOPE_HDR"
+  echo "  gamescope HDR target nits $GAMESCOPE_HDR_NITS"
 }
 
 save_config() {
@@ -137,6 +151,10 @@ GAME_H=$GAME_H
 STRETCH_FLAG=$STRETCH_FLAG
 G_FPS=$G_FPS
 STEAM_TYPE=$STEAM_TYPE
+ADAPTIVE_SYNC=$ADAPTIVE_SYNC
+ENABLE_GAMESCOPE_HDR=$ENABLE_GAMESCOPE_HDR
+GAMESCOPE_HDR_NITS=$GAMESCOPE_HDR_NITS
+STEAM_USE_STEAMOS_FLAG=$STEAM_USE_STEAMOS_FLAG
 EOF
 }
 
@@ -287,6 +305,46 @@ choose_gamescope_rate() {
   G_FPS=$val
 }
 
+choose_vrr_hdr_and_steamos() {
+  echo "Optional gamescope / Steam features:"
+
+  # VRR / adaptive sync
+  local vrr
+  vrr=$(read_default "Enable gamescope adaptive sync / VRR? (0 = no, 1 = yes)" "$ADAPTIVE_SYNC")
+  if [[ "$vrr" == "1" ]]; then
+    ADAPTIVE_SYNC=1
+  else
+    ADAPTIVE_SYNC=0
+  fi
+
+  # HDR
+  local hdr
+  hdr=$(read_default "Enable gamescope HDR output? (0 = no, 1 = yes)" "$ENABLE_GAMESCOPE_HDR")
+  if [[ "$hdr" == "1" ]]; then
+    ENABLE_GAMESCOPE_HDR=1
+    local nits
+    nits=$(read_default "HDR ITM target nits (gamescope --hdr-itm-target-nits)" "$GAMESCOPE_HDR_NITS")
+    if [[ "$nits" =~ ^[0-9]+$ ]]; then
+      GAMESCOPE_HDR_NITS=$nits
+    else
+      echo "Invalid nits value; keeping $GAMESCOPE_HDR_NITS."
+    fi
+  else
+    ENABLE_GAMESCOPE_HDR=0
+  fi
+
+  # Steam -steamos flag
+  local steamos
+  steamos=$(read_default "Add -steamos to Steam command? (0 = no, 1 = yes)" "$STEAM_USE_STEAMOS_FLAG")
+  if [[ "$steamos" == "1" ]]; then
+    STEAM_USE_STEAMOS_FLAG=1
+  else
+    STEAM_USE_STEAMOS_FLAG=0
+  fi
+
+  echo
+}
+
 # ---------------- Steam installation detection ----------------
 detect_steam_installations() {
   local available=()
@@ -344,19 +402,27 @@ detect_steam_installations() {
 }
 
 configure_steam_command() {
+  # If user set override, leave it alone
   if [[ -n "${STEAM_CMD_OVERRIDE-}" ]]; then
-    # User has explicitly set a command override, respect it
     return
   fi
 
   if [[ "$STEAM_TYPE" == "flatpak" ]]; then
-    STEAM_CMD_ARR=(flatpak run com.valvesoftware.Steam -gamepadui)
+    if (( STEAM_USE_STEAMOS_FLAG )); then
+      STEAM_CMD_ARR=(flatpak run com.valvesoftware.Steam -steamos -gamepadui)
+    else
+      STEAM_CMD_ARR=(flatpak run com.valvesoftware.Steam -gamepadui)
+    fi
   else
-    STEAM_CMD_ARR=(steam -gamepadui)
+    if (( STEAM_USE_STEAMOS_FLAG )); then
+      STEAM_CMD_ARR=(steam -steamos -gamepadui)
+    else
+      STEAM_CMD_ARR=(steam -gamepadui)
+    fi
   fi
 }
 
-# ---------------- gamescope path ----------------
+# ---------------- gamescope path / deps ----------------
 check_deps() {
   MISSING_CMDS=()
   require_cmd gamescope
@@ -388,11 +454,15 @@ launch_gamescope_session() {
 
   echo
   echo "Launching gamescope on $DRM_SHORT:"
-  echo "  Steam type:     ${STEAM_TYPE:-native}"
-  echo "  Outer (panel):  ${NATIVE_W}x${NATIVE_H}"
-  echo "  Inner (game):   ${GAME_W}x${GAME_H}"
-  echo "  Stretch mode:   ${STRETCH_FLAG}"
-  echo "  Target refresh: ${G_FPS} Hz (gamescope -r, 0 = unlimited)"
+  echo "  Steam type:           ${STEAM_TYPE:-native}"
+  echo "  Steam -steamos flag:  ${STEAM_USE_STEAMOS_FLAG}"
+  echo "  Outer (panel):        ${NATIVE_W}x${NATIVE_H}"
+  echo "  Inner (game):         ${GAME_W}x${GAME_H}"
+  echo "  Stretch mode:         ${STRETCH_FLAG}"
+  echo "  Target refresh:       ${G_FPS} Hz (gamescope -r, 0 = unlimited)"
+  echo "  Adaptive sync (VRR):  ${ADAPTIVE_SYNC}"
+  echo "  HDR enabled:          ${ENABLE_GAMESCOPE_HDR}"
+  echo "  HDR ITM target nits:  ${GAMESCOPE_HDR_NITS}"
   echo
 
   local args=()
@@ -407,6 +477,14 @@ launch_gamescope_session() {
 
   if [[ "$STRETCH_FLAG" == "stretch" ]]; then
     args+=(-S stretch)
+  fi
+
+  if (( ADAPTIVE_SYNC == 1 )); then
+    args+=(--adaptive-sync)
+  fi
+
+  if (( ENABLE_GAMESCOPE_HDR == 1 )); then
+    args+=(--hdr-enabled --hdr-itm-enable --hdr-itm-target-nits "$GAMESCOPE_HDR_NITS")
   fi
 
   echo "Command:"
@@ -424,6 +502,7 @@ interactive_new_config() {
   choose_drm_output
   choose_resolution_profile
   choose_gamescope_rate
+  choose_vrr_hdr_and_steamos
   save_config
   launch_gamescope_session
 }
@@ -435,7 +514,7 @@ run_from_current_config() {
   fi
 
   # Set default if not set
-  if [[ -z "$STEAM_TYPE" ]]; then
+  if [[ -z "${STEAM_TYPE:-}" ]]; then
     STEAM_TYPE="native"
   fi
 
@@ -458,18 +537,27 @@ run_from_current_config() {
   launch_gamescope_session
 }
 
+kill_gamescope() {
+  if pkill -x gamescope >/dev/null 2>&1; then
+    echo "Killed gamescope processes for user $USER."
+  else
+    echo "No gamescope processes found for user $USER."
+  fi
+}
+
 # ---------------- main ----------------
 if [[ ${UID:-$(id -u)} -eq 0 ]]; then
   echo "Do not run as root. Log in on a TTY as your normal user and run this script."
   exit 1
 fi
 
-while getopts ":hnlp" opt; do
+while getopts ":hnlpk" opt; do
   case "$opt" in
     h) FLAG_HELP=1 ;;
     n) FLAG_NEW=1 ;;
     l) FLAG_LAST=1 ;;
     p) FLAG_PRINT=1 ;;
+    k) FLAG_KILL=1 ;;
     \?) echo "Unknown option: -$OPTARG"; exit 1 ;;
   esac
 done
@@ -477,6 +565,11 @@ shift $((OPTIND - 1))
 
 if (( FLAG_HELP )); then
   print_help
+  exit 0
+fi
+
+if (( FLAG_KILL )); then
+  kill_gamescope
   exit 0
 fi
 
