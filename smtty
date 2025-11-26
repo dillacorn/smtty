@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# smtty - Steam Machine TTY launcher (gamescope-only)
+# smtty - Steam Machine launcher (gamescope-only)
+# Can be run from a bare TTY or from an X11/Wayland session (Hyprland, Sway, KDE, GNOME, etc.).
 # Recommended install location:
 #   - $HOME/.local/bin/smtty  (user)
 #   - /usr/local/bin/smtty    (system-wide)
 
 set -euo pipefail
 
-# ---------------- Steam command (Big Picture) ----------------
+# ---------------- Steam command (Gamepad UI) ----------------
 # Optional override:
 #   STEAM_CMD_OVERRIDE='steam -gamepadui -nochatui'
 if [[ "${STEAM_CMD_OVERRIDE-}" != "" ]]; then
@@ -15,8 +16,11 @@ else
   STEAM_CMD_ARR=(steam -gamepadui)
 fi
 
-# Steam installation type (will be set during detection)
+# Steam installation type (set during detection)
 STEAM_TYPE=""  # "native" or "flatpak"
+
+# Session mode: "kms" (bare VT) or "nested" (X11/Wayland compositor)
+SESSION_MODE="kms"
 
 # ---------------- config paths ----------------
 CONFIG_DIR="$HOME/.config/smtty"
@@ -97,7 +101,7 @@ read_default() {
 
 print_help() {
   cat <<EOF
-smtty - Steam Machine TTY launcher (gamescope-only)
+smtty - Steam Machine launcher (gamescope-only)
 
 Usage:
   smtty [options]
@@ -117,6 +121,11 @@ Config:
   $CONFIG_FILE
       Stores DRM output, resolution, stretch flag, gamescope display rate,
       VRR / HDR settings and Steam type/flags.
+
+Notes:
+  - Can be run from a bare TTY (KMS mode) or from inside a compositor
+    (Hyprland, Sway, KDE, GNOME, etc.). Resolution and scaling are always
+    applied via gamescope runtime flags, not permanent display config writes.
 EOF
 }
 
@@ -163,6 +172,14 @@ load_config() {
     # shellcheck source=/dev/null
     . "$CONFIG_FILE"
     HAVE_CONFIG=1
+  fi
+}
+
+detect_session_mode() {
+  if [[ -n "${WAYLAND_DISPLAY-}" || -n "${DISPLAY-}" ]]; then
+    SESSION_MODE="nested"
+  else
+    SESSION_MODE="kms"
   fi
 }
 
@@ -228,7 +245,14 @@ choose_drm_output() {
 
   echo
   echo "Using DRM output: $DRM_SHORT (native ${NATIVE_W}x${NATIVE_H})"
+  echo "Session mode:     $SESSION_MODE (kms = bare VT, nested = under compositor)"
   echo
+  if [[ "$SESSION_MODE" == "nested" ]]; then
+    echo "Note: running under a compositor. gamescope will be nested as a window"
+    echo "      or fullscreen surface. Physical monitor resolution is not changed,"
+    echo "      but gamescope still controls internal and outer resolutions/scaling."
+    echo
+  fi
 }
 
 choose_resolution_profile() {
@@ -422,7 +446,7 @@ configure_steam_command() {
   fi
 }
 
-# ---------------- gamescope path / deps ----------------
+# ---------------- gamescope deps ----------------
 check_deps() {
   MISSING_CMDS=()
   require_cmd gamescope
@@ -453,23 +477,29 @@ launch_gamescope_session() {
   check_deps
 
   echo
-  echo "Launching gamescope on $DRM_SHORT:"
-  echo "  Steam type:           ${STEAM_TYPE:-native}"
-  echo "  Steam -steamos flag:  ${STEAM_USE_STEAMOS_FLAG}"
-  echo "  Outer (panel):        ${NATIVE_W}x${NATIVE_H}"
-  echo "  Inner (game):         ${GAME_W}x${GAME_H}"
-  echo "  Stretch mode:         ${STRETCH_FLAG}"
-  echo "  Target refresh:       ${G_FPS} Hz (gamescope -r, 0 = unlimited)"
-  echo "  Adaptive sync (VRR):  ${ADAPTIVE_SYNC}"
-  echo "  HDR enabled:          ${ENABLE_GAMESCOPE_HDR}"
-  echo "  HDR ITM target nits:  ${GAMESCOPE_HDR_NITS}"
+  echo "Launching gamescope:"
+  echo "  Session mode:          $SESSION_MODE (kms = bare VT, nested = under compositor)"
+  echo "  Steam type:            ${STEAM_TYPE:-native}"
+  echo "  Steam -steamos flag:   ${STEAM_USE_STEAMOS_FLAG}"
+  echo "  DRM output:            $DRM_SHORT"
+  echo "  Outer (panel/native):  ${NATIVE_W}x${NATIVE_H}"
+  echo "  Inner (game):          ${GAME_W}x${GAME_H}"
+  echo "  Stretch mode:          ${STRETCH_FLAG}"
+  echo "  Target refresh:        ${G_FPS} Hz (gamescope -r, 0 = unlimited)"
+  echo "  Adaptive sync (VRR):   ${ADAPTIVE_SYNC}"
+  echo "  HDR enabled:           ${ENABLE_GAMESCOPE_HDR}"
+  echo "  HDR ITM target nits:   ${GAMESCOPE_HDR_NITS}"
   echo
 
   local args=()
   args+=(-f -e)
   args+=(-W "$NATIVE_W" -H "$NATIVE_H")
   args+=(-w "$GAME_W" -h "$GAME_H")
-  args+=(-O "$DRM_SHORT")
+
+  # KMS-only output selection
+  if [[ "$SESSION_MODE" == "kms" ]]; then
+    args+=(-O "$DRM_SHORT")
+  fi
 
   if (( G_FPS > 0 )); then
     args+=(-r "$G_FPS")
@@ -498,6 +528,7 @@ launch_gamescope_session() {
 }
 
 interactive_new_config() {
+  detect_session_mode
   detect_steam_installations
   choose_drm_output
   choose_resolution_profile
@@ -508,6 +539,8 @@ interactive_new_config() {
 }
 
 run_from_current_config() {
+  detect_session_mode
+
   if [[ -z "$DRM_SHORT" || -z "$DRM_NATIVE_MODE" ]]; then
     echo "Config incomplete; re-running interactive setup."
     interactive_new_config
@@ -538,16 +571,16 @@ run_from_current_config() {
 }
 
 kill_gamescope() {
-  if pkill -x gamescope >/dev/null 2>&1; then
-    echo "Killed gamescope processes for user $USER."
+  if pkill gamescope >/dev/null 2>&1; then
+    echo "Killed gamescope processes."
   else
-    echo "No gamescope processes found for user $USER."
+    echo "No gamescope processes found."
   fi
 }
 
 # ---------------- main ----------------
 if [[ ${UID:-$(id -u)} -eq 0 ]]; then
-  echo "Do not run as root. Log in on a TTY as your normal user and run this script."
+  echo "Do not run as root. Use your regular user account."
   exit 1
 fi
 
@@ -595,6 +628,7 @@ if (( FLAG_LAST )); then
 fi
 
 if (( HAVE_CONFIG )); then
+  detect_session_mode
   echo "Found saved smtty config."
   print_config_summary
   echo
