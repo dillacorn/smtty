@@ -38,11 +38,12 @@ STRETCH_FLAG="none"   # "none" | "stretch"
 
 G_FPS=0               # gamescope -r (target display refresh, Hz; 0 = unlimited)
 
-# VRR / HDR / Steam flags
+# VRR / HDR / Steam / cursor flags
 ADAPTIVE_SYNC=0          # 0/1 -> --adaptive-sync
 ENABLE_GAMESCOPE_HDR=0   # 0/1 -> --hdr-enabled (+ ITM)
 GAMESCOPE_HDR_NITS=1000  # used with --hdr-itm-target-nits
 STEAM_USE_STEAMOS_FLAG=0 # 0/1 -> add -steamos to Steam
+FORCE_GRAB_CURSOR=0      # 0/1 -> --force-grab-cursor (KMS only)
 
 # PipeWire debug control for gamescope
 # "inherit" = do not set PIPEWIRE_DEBUG (respect system / environment)
@@ -159,6 +160,7 @@ print_config_summary() {
   echo "  gamescope adaptive-sync:  $ADAPTIVE_SYNC"
   echo "  gamescope HDR enabled:    $ENABLE_GAMESCOPE_HDR"
   echo "  gamescope HDR target nits $GAMESCOPE_HDR_NITS"
+  echo "  gamescope force grab:     $FORCE_GRAB_CURSOR"
   echo "  PipeWire debug mode:      $PIPEWIRE_DEBUG_MODE (inherit or 0–3)"
 }
 
@@ -178,6 +180,7 @@ ADAPTIVE_SYNC=$ADAPTIVE_SYNC
 ENABLE_GAMESCOPE_HDR=$ENABLE_GAMESCOPE_HDR
 GAMESCOPE_HDR_NITS=$GAMESCOPE_HDR_NITS
 STEAM_USE_STEAMOS_FLAG=$STEAM_USE_STEAMOS_FLAG
+FORCE_GRAB_CURSOR=$FORCE_GRAB_CURSOR
 PIPEWIRE_DEBUG_MODE=$PIPEWIRE_DEBUG_MODE
 EOF
 }
@@ -188,8 +191,9 @@ load_config() {
     . "$CONFIG_FILE"
     HAVE_CONFIG=1
   fi
-  # Backward compatibility: old configs won't have this
+  # Backward compatibility: old configs won't have these
   PIPEWIRE_DEBUG_MODE=${PIPEWIRE_DEBUG_MODE:-inherit}
+  FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
 }
 
 detect_session_mode() {
@@ -397,6 +401,18 @@ choose_vrr_hdr_and_steamos() {
   fi
 
   echo
+  echo "Cursor grab:"
+  echo "  Mostly useful on bare TTY (KMS). In nested sessions it can make"
+  echo "  mouse input worse if games + overlays already manage grabs."
+  local fg
+  fg=$(read_default "Force gamescope cursor grab in KMS mode? (0 = no, 1 = yes)" "$FORCE_GRAB_CURSOR")
+  if [[ "$fg" == "1" ]]; then
+    FORCE_GRAB_CURSOR=1
+  else
+    FORCE_GRAB_CURSOR=0
+  fi
+
+  echo
 }
 
 choose_pipewire_debug() {
@@ -550,6 +566,7 @@ launch_gamescope_session() {
   echo "  Adaptive sync (VRR):   ${ADAPTIVE_SYNC}"
   echo "  HDR enabled:           ${ENABLE_GAMESCOPE_HDR}"
   echo "  HDR ITM target nits:   ${GAMESCOPE_HDR_NITS}"
+  echo "  Force cursor grab:     ${FORCE_GRAB_CURSOR} (KMS only)"
   echo "  PipeWire debug mode:   ${PIPEWIRE_DEBUG_MODE}"
   echo "  Detach mode:           ${FLAG_DETACH}"
   echo
@@ -578,6 +595,11 @@ launch_gamescope_session() {
 
   if (( ENABLE_GAMESCOPE_HDR == 1 )); then
     args+=(--hdr-enabled --hdr-itm-enable --hdr-itm-target-nits "$GAMESCOPE_HDR_NITS")
+  fi
+
+  # Only force grab in KMS mode; nested + overlays can break relative input
+  if (( FORCE_GRAB_CURSOR == 1 )) && [[ "$SESSION_MODE" == "kms" ]]; then
+    args+=(--force-grab-cursor)
   fi
 
   echo "Command:"
@@ -636,6 +658,7 @@ run_from_current_config() {
   fi
 
   PIPEWIRE_DEBUG_MODE=${PIPEWIRE_DEBUG_MODE:-inherit}
+  FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
 
   # Validate that the saved Steam type is still available
   if [[ "$STEAM_TYPE" == "flatpak" ]]; then
