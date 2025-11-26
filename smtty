@@ -44,6 +44,14 @@ ENABLE_GAMESCOPE_HDR=0   # 0/1 -> --hdr-enabled (+ ITM)
 GAMESCOPE_HDR_NITS=1000  # used with --hdr-itm-target-nits
 STEAM_USE_STEAMOS_FLAG=0 # 0/1 -> add -steamos to Steam
 
+# PipeWire debug control for gamescope
+# "inherit" = do not set PIPEWIRE_DEBUG (respect system / environment)
+# "0"       = errors only (quiet)
+# "1"       = errors + warnings
+# "2"       = info
+# "3"       = verbose debug
+PIPEWIRE_DEBUG_MODE="inherit"
+
 MISSING_CMDS=()
 HAVE_CONFIG=0
 
@@ -116,11 +124,14 @@ Options:
 Environment:
   STEAM_CMD_OVERRIDE='steam -gamepadui'
       Override the Steam command used (default is auto-chosen native/flatpak).
+  PIPEWIRE_DEBUG
+      If smtty PipeWire mode is "inherit", this is passed through unchanged.
+      Otherwise, smtty overrides it with the selected numeric level.
 
 Config:
   $CONFIG_FILE
       Stores DRM output, resolution, stretch flag, gamescope display rate,
-      VRR / HDR settings and Steam type/flags.
+      VRR / HDR settings, PipeWire debug level, and Steam type/flags.
 
 Notes:
   - Can be run from a bare TTY (KMS mode) or from inside a compositor
@@ -146,6 +157,7 @@ print_config_summary() {
   echo "  gamescope adaptive-sync:  $ADAPTIVE_SYNC"
   echo "  gamescope HDR enabled:    $ENABLE_GAMESCOPE_HDR"
   echo "  gamescope HDR target nits $GAMESCOPE_HDR_NITS"
+  echo "  PipeWire debug mode:      $PIPEWIRE_DEBUG_MODE (inherit or 0–3)"
 }
 
 save_config() {
@@ -164,6 +176,7 @@ ADAPTIVE_SYNC=$ADAPTIVE_SYNC
 ENABLE_GAMESCOPE_HDR=$ENABLE_GAMESCOPE_HDR
 GAMESCOPE_HDR_NITS=$GAMESCOPE_HDR_NITS
 STEAM_USE_STEAMOS_FLAG=$STEAM_USE_STEAMOS_FLAG
+PIPEWIRE_DEBUG_MODE=$PIPEWIRE_DEBUG_MODE
 EOF
 }
 
@@ -173,6 +186,8 @@ load_config() {
     . "$CONFIG_FILE"
     HAVE_CONFIG=1
   fi
+  # Backward compatibility: old configs won't have this
+  PIPEWIRE_DEBUG_MODE=${PIPEWIRE_DEBUG_MODE:-inherit}
 }
 
 detect_session_mode() {
@@ -369,6 +384,37 @@ choose_vrr_hdr_and_steamos() {
   echo
 }
 
+choose_pipewire_debug() {
+  echo "PipeWire / gamescope log verbosity:"
+  echo "  This controls PIPEWIRE_DEBUG for the gamescope process only."
+  echo "  Lower values reduce spam like 'pipewire: warning: out of buffers'."
+  echo
+  prompt_select "Choose PipeWire debug level:" \
+    "Inherit system default (do not set PIPEWIRE_DEBUG)" \
+    "Quiet: errors only [PIPEWIRE_DEBUG=0]" \
+    "Errors + warnings [PIPEWIRE_DEBUG=1]" \
+    "Info (more detail) [PIPEWIRE_DEBUG=2]" \
+    "Verbose debug [PIPEWIRE_DEBUG=3]"
+
+  case $REPLY in
+    1) PIPEWIRE_DEBUG_MODE="inherit" ;;
+    2) PIPEWIRE_DEBUG_MODE="0" ;;
+    3) PIPEWIRE_DEBUG_MODE="1" ;;
+    4) PIPEWIRE_DEBUG_MODE="2" ;;
+    5) PIPEWIRE_DEBUG_MODE="3" ;;
+    *) PIPEWIRE_DEBUG_MODE="inherit" ;;
+  esac
+
+  echo
+  echo "PipeWire debug mode set to: $PIPEWIRE_DEBUG_MODE"
+  echo "  inherit  = smtty leaves PIPEWIRE_DEBUG alone"
+  echo "  0        = only errors (very quiet)"
+  echo "  1        = errors + warnings"
+  echo "  2        = info"
+  echo "  3        = verbose debug"
+  echo
+}
+
 # ---------------- Steam installation detection ----------------
 detect_steam_installations() {
   local available=()
@@ -489,6 +535,7 @@ launch_gamescope_session() {
   echo "  Adaptive sync (VRR):   ${ADAPTIVE_SYNC}"
   echo "  HDR enabled:           ${ENABLE_GAMESCOPE_HDR}"
   echo "  HDR ITM target nits:   ${GAMESCOPE_HDR_NITS}"
+  echo "  PipeWire debug mode:   ${PIPEWIRE_DEBUG_MODE}"
   echo
 
   local args=()
@@ -524,6 +571,13 @@ launch_gamescope_session() {
   printf ' %q' "${STEAM_CMD_ARR[@]}"
   printf '\n\n'
 
+  # Apply PipeWire debug mode for gamescope only
+  # "inherit" leaves PIPEWIRE_DEBUG unchanged (system/env default).
+  # Any numeric value overrides it.
+  if [[ "${PIPEWIRE_DEBUG_MODE:-inherit}" != "inherit" ]]; then
+    export PIPEWIRE_DEBUG="$PIPEWIRE_DEBUG_MODE"
+  fi
+
   exec gamescope "${args[@]}" -- "${STEAM_CMD_ARR[@]}"
 }
 
@@ -534,6 +588,7 @@ interactive_new_config() {
   choose_resolution_profile
   choose_gamescope_rate
   choose_vrr_hdr_and_steamos
+  choose_pipewire_debug
   save_config
   launch_gamescope_session
 }
@@ -550,6 +605,8 @@ run_from_current_config() {
   if [[ -z "${STEAM_TYPE:-}" ]]; then
     STEAM_TYPE="native"
   fi
+
+  PIPEWIRE_DEBUG_MODE=${PIPEWIRE_DEBUG_MODE:-inherit}
 
   # Validate that the saved Steam type is still available
   if [[ "$STEAM_TYPE" == "flatpak" ]]; then
