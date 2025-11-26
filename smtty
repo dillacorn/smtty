@@ -220,9 +220,22 @@ choose_drm_output() {
     short=${dir##*/}
     short=${short#card*-}
 
-    if ! read -r native_line <"$modes_path"; then
-      native_line="unknown"
-    fi
+    # Read all modes and pick the largest WxH by area
+    native_line="unknown"
+    local max_area=0
+    local mline mw mh area
+    while IFS= read -r mline; do
+      [[ -z "$mline" ]] && continue
+      if [[ "$mline" =~ ([0-9]+)x([0-9]+) ]]; then
+        mw=${BASH_REMATCH[1]}
+        mh=${BASH_REMATCH[2]}
+        area=$(( mw * mh ))
+        if (( area > max_area )); then
+          max_area=$area
+          native_line="$mline"
+        fi
+      fi
+    done <"$modes_path"
 
     entries+=("$short:$native_line")
     printf '  [%d] %s (native: %s)\n' "$idx" "$short" "$native_line"
