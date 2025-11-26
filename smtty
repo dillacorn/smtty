@@ -14,6 +14,9 @@ else
   STEAM_CMD_ARR=(steam -tenfoot)
 fi
 
+# Steam installation type (will be set during detection)
+STEAM_TYPE=""  # "native" or "flatpak"
+
 # ---------------- config paths ----------------
 CONFIG_DIR="$HOME/.config/smtty"
 CONFIG_FILE="$CONFIG_DIR/config"
@@ -114,6 +117,7 @@ print_config_summary() {
   fi
 
   echo "Saved smtty config ($CONFIG_FILE):"
+  echo "  Steam type:             ${STEAM_TYPE:-native}"
   echo "  DRM output:             $DRM_SHORT"
   echo "  Native mode:            $DRM_NATIVE_MODE"
   echo "  Game resolution:        ${GAME_W}x${GAME_H}"
@@ -132,6 +136,7 @@ GAME_W=$GAME_W
 GAME_H=$GAME_H
 STRETCH_FLAG=$STRETCH_FLAG
 G_FPS=$G_FPS
+STEAM_TYPE=$STEAM_TYPE
 EOF
 }
 
@@ -282,11 +287,88 @@ choose_gamescope_rate() {
   G_FPS=$val
 }
 
+# ---------------- Steam installation detection ----------------
+detect_steam_installations() {
+  local available=()
+  local have_native=0
+  local have_flatpak=0
+
+  # Check for native Steam
+  if command -v steam >/dev/null 2>&1; then
+    available+=("Native Steam (steam)")
+    have_native=1
+  fi
+
+  # Check for Flatpak Steam
+  if command -v flatpak >/dev/null 2>&1 && \
+     flatpak list --app 2>/dev/null | grep -q "com.valvesoftware.Steam"; then
+    available+=("Steam Flatpak (com.valvesoftware.Steam)")
+    have_flatpak=1
+  fi
+
+  if (( ${#available[@]} == 0 )); then
+    echo "Error: No Steam installation found."
+    echo "Please install Steam (native) or Steam Flatpak."
+    exit 1
+  fi
+
+  # If only one option is available, use it automatically
+  if (( ${#available[@]} == 1 )); then
+    if (( have_native )); then
+      STEAM_TYPE="native"
+      echo "Detected: Native Steam"
+    else
+      STEAM_TYPE="flatpak"
+      echo "Detected: Steam Flatpak"
+    fi
+    echo
+    return
+  fi
+
+  # Multiple options available, let user choose
+  echo "Multiple Steam installations detected:"
+  prompt_select "Choose Steam installation:" "${available[@]}"
+
+  if (( REPLY == 1 )); then
+    STEAM_TYPE="native"
+  else
+    STEAM_TYPE="flatpak"
+  fi
+
+  echo
+  echo "Using: ${available[REPLY-1]}"
+  echo
+}
+
+configure_steam_command() {
+  if [[ -n "${STEAM_CMD_OVERRIDE-}" ]]; then
+    # User has explicitly set a command override, respect it
+    return
+  fi
+
+  if [[ "$STEAM_TYPE" == "flatpak" ]]; then
+    STEAM_CMD_ARR=(flatpak run com.valvesoftware.Steam -tenfoot)
+  else
+    STEAM_CMD_ARR=(steam -tenfoot)
+  fi
+}
+
 # ---------------- gamescope path ----------------
 check_deps() {
   MISSING_CMDS=()
   require_cmd gamescope
-  require_cmd "${STEAM_CMD_ARR[0]}"
+
+  # Check Steam based on type
+  if [[ "$STEAM_TYPE" == "flatpak" ]]; then
+    require_cmd flatpak
+    # Verify the Steam flatpak is actually installed
+    if ! flatpak list --app 2>/dev/null | grep -q "com.valvesoftware.Steam"; then
+      echo "Error: Steam Flatpak (com.valvesoftware.Steam) is not installed."
+      exit 1
+    fi
+  else
+    require_cmd steam
+  fi
 
   if ((${#MISSING_CMDS[@]} > 0)); then
     echo "Missing required commands:"
@@ -298,10 +380,12 @@ check_deps() {
 }
 
 launch_gamescope_session() {
+  configure_steam_command
   check_deps
 
   echo
   echo "Launching gamescope on $DRM_SHORT:"
+  echo "  Steam type:     ${STEAM_TYPE:-native}"
   echo "  Outer (panel):  ${NATIVE_W}x${NATIVE_H}"
   echo "  Inner (game):   ${GAME_W}x${GAME_H}"
   echo "  Stretch mode:   ${STRETCH_FLAG}"
@@ -333,6 +417,7 @@ launch_gamescope_session() {
 }
 
 interactive_new_config() {
+  detect_steam_installations
   choose_drm_output
   choose_resolution_profile
   choose_gamescope_rate
@@ -345,6 +430,28 @@ run_from_current_config() {
     echo "Config incomplete; re-running interactive setup."
     interactive_new_config
   fi
+
+  # Set default if not set
+  if [[ -z "$STEAM_TYPE" ]]; then
+    STEAM_TYPE="native"
+  fi
+
+  # Validate that the saved Steam type is still available
+  if [[ "$STEAM_TYPE" == "flatpak" ]]; then
+    if ! command -v flatpak >/dev/null 2>&1 || \
+       ! flatpak list --app 2>/dev/null | grep -q "com.valvesoftware.Steam"; then
+      echo "Warning: Saved config uses Steam Flatpak, but it's not available."
+      detect_steam_installations
+      save_config
+    fi
+  elif [[ "$STEAM_TYPE" == "native" ]]; then
+    if ! command -v steam >/dev/null 2>&1; then
+      echo "Warning: Saved config uses native Steam, but it's not available."
+      detect_steam_installations
+      save_config
+    fi
+  fi
+
   launch_gamescope_session
 }
 
