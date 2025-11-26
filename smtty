@@ -8,10 +8,10 @@ set -euo pipefail
 
 # ---------------- Steam command (Big Picture) ----------------
 if [[ "${STEAM_CMD_OVERRIDE-}" != "" ]]; then
-  # Example: STEAM_CMD_OVERRIDE='steam -tenfoot -nochatui'
+  # Example: STEAM_CMD_OVERRIDE='steam -gamepadui -nochatui'
   read -ra STEAM_CMD_ARR <<<"$STEAM_CMD_OVERRIDE"
 else
-  STEAM_CMD_ARR=(steam -tenfoot)
+  STEAM_CMD_ARR=(steam -gamepadui)
 fi
 
 # Steam installation type (will be set during detection)
@@ -101,8 +101,8 @@ Options:
   -p        Print saved config summary and exit.
 
 Environment:
-  STEAM_CMD_OVERRIDE='steam -tenfoot'
-      Override the Steam command used (default: steam -tenfoot).
+  STEAM_CMD_OVERRIDE='steam -gamepadui'
+      Override the Steam command used (default: steam -gamepadui).
 
 Config:
   $CONFIG_FILE
@@ -350,9 +350,9 @@ configure_steam_command() {
   fi
 
   if [[ "$STEAM_TYPE" == "flatpak" ]]; then
-    STEAM_CMD_ARR=(flatpak run com.valvesoftware.Steam -tenfoot)
+    STEAM_CMD_ARR=(flatpak run com.valvesoftware.Steam -gamepadui)
   else
-    STEAM_CMD_ARR=(steam -tenfoot)
+    STEAM_CMD_ARR=(steam -gamepadui)
   fi
 }
 
