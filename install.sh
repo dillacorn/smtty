@@ -10,6 +10,7 @@ set -euo pipefail
 PREFIX=${PREFIX:-"$HOME/.local"}
 BINDIR="$PREFIX/bin"
 TARGET="$BINDIR/smtty"
+UPDATER_TARGET="$BINDIR/smtty-update"
 
 # Resolve script dir
 SCRIPT_DIR=$(
@@ -46,6 +47,11 @@ if [[ -e "$TARGET" ]]; then
     2)
       rm -f "$TARGET"
       echo "Removed smtty from $TARGET"
+      # Also remove smtty-update if it exists
+      if [[ -f "$UPDATER_TARGET" ]]; then
+        rm -f "$UPDATER_TARGET"
+        echo "Removed smtty-update from $UPDATER_TARGET"
+      fi
       # optional config removal
       if [[ -d "$HOME/.config/smtty" ]]; then
         read -rp "Remove config directory $HOME/.config/smtty? [y/N]: " c
@@ -67,6 +73,13 @@ else
   echo "Installed smtty to $TARGET"
 fi
 
+# Install smtty-update if available
+if [[ -f "$SCRIPT_DIR/smtty-update" ]]; then
+  cp "$SCRIPT_DIR/smtty-update" "$UPDATER_TARGET"
+  chmod +x "$UPDATER_TARGET"
+  echo "Installed smtty-update to $UPDATER_TARGET"
+fi
+
 # PATH hint
 case ":$PATH:" in
   *":$BINDIR:"*) ;;
@@ -80,3 +93,6 @@ esac
 
 echo
 echo "You can now run: smtty"
+if [[ -f "$UPDATER_TARGET" ]]; then
+  echo "To update smtty in the future, run: smtty-update"
+fi
