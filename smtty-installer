@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# install.sh - installer for smtty
+# smtty-installer - installer and manager for smtty
 #
 # Defaults to user install in: $HOME/.local/bin/smtty
-# Override with: PREFIX=/some/prefix ./install.sh
+# Override with: PREFIX=/some/prefix ./smtty-installer
 #   -> installs to: $PREFIX/bin/smtty
+#
+# If smtty is already installed, this script can also uninstall it.
 
 set -euo pipefail
 
@@ -24,7 +26,7 @@ if [[ -f "$SCRIPT_DIR/smtty" ]]; then
 elif [[ -f "$SCRIPT_DIR/smtty.sh" ]]; then
   SOURCE="$SCRIPT_DIR/smtty.sh"
 else
-  echo "Error: smtty or smtty.sh not found next to install.sh"
+  echo "Error: smtty or smtty.sh not found next to smtty-installer"
   exit 1
 fi
 
