@@ -792,11 +792,29 @@ steam_is_running() {
 }
 
 kill_steam_client() {
-  if pkill steam >/dev/null 2>&1; then
-    echo "Killed Steam client."
-  else
+  # If Steam isn't running, nothing to do.
+  if ! pgrep -x steam >/dev/null 2>&1; then
     echo "No Steam client processes found."
+    return 0
   fi
+
+  echo "Stopping Steam client..."
+  pkill steam >/dev/null 2>&1 || true
+
+  # Wait for Steam to actually die to avoid races where gamescope
+  # starts while Steam is still shutting down.
+  local i
+  for ((i = 0; i < 40; i++)); do  # ~10 seconds total at 0.25s step
+    if ! pgrep -x steam >/dev/null 2>&1; then
+      echo "Steam client stopped."
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  echo "Steam still appears to be running after waiting ~10 seconds."
+  echo "Aborting smtty launch to avoid a broken gamescope start."
+  exit 1
 }
 
 handle_running_steam_before_launch() {
