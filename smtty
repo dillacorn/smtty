@@ -4,6 +4,45 @@
 # Recommended install location:
 #   - $HOME/.local/bin/smtty  (user)
 #   - /usr/local/bin/smtty    (system-wide)
+#
+# Modes:
+#   Default:
+#     Interactive launcher for Steam Gamepad UI (Big Picture) inside gamescope.
+#
+#   -O
+#     Generate ready-to-paste Steam per-game launch options (nested gamescope, no Big Picture).
+#
+#   -R
+#     Record the Steam/Proton environment and game command being launched, then exec it.
+#     Intended for use in Steam launch options, for example:
+#       smtty -R gamemoderun %command% -novid +fps_max 0 -high -dx12
+#
+#     Writes ~/.config/smtty/last_game with:
+#       - SteamAppId, SteamGameId
+#       - STEAM_COMPAT_APP_ID, STEAM_COMPAT_DATA_PATH,
+#         STEAM_COMPAT_CLIENT_INSTALL_PATH, STEAM_COMPAT_INSTALL_PATH
+#       - GAME_CMD_ARR=( ... )  (the full Proton pipeline, including your wrapper flags)
+#
+#   -r
+#     Replay the last recorded game instead of Steam Gamepad UI inside gamescope.
+#     Internally:
+#       - restores Steam/Proton env from last_game
+#       - runs "${GAME_CMD_ARR[@]}" directly as gamescope's inner payload
+#
+#     Typical usage from a bare KMS TTY:
+#       smtty -l -r
+#
+#   -l
+#     Use last saved smtty config (DRM, res, VRR, HDR, etc.) non-interactively.
+#
+#   -n
+#     New interactive setup for smtty config.
+#
+#   -k
+#     Kill any running gamescope processes.
+#
+#   -d
+#     Detach gamescope (run in background, return to shell).
 
 set -euo pipefail
 
@@ -25,6 +64,7 @@ SESSION_MODE="kms"
 # ---------------- config paths ----------------
 CONFIG_DIR="$HOME/.config/smtty"
 CONFIG_FILE="$CONFIG_DIR/config"
+LAST_GAME_FILE="$CONFIG_DIR/last_game"
 
 # ---------------- state ----------------
 DRM_SHORT=""
@@ -60,6 +100,9 @@ LD_PRELOAD_MODE="inherit"
 MISSING_CMDS=()
 HAVE_CONFIG=0
 
+# Recorded game command (from last_game)
+GAME_CMD_ARR=()
+
 # flags
 FLAG_HELP=0
 FLAG_NEW=0
@@ -67,7 +110,9 @@ FLAG_LAST=0
 FLAG_PRINT=0
 FLAG_KILL=0
 FLAG_DETACH=0
-FLAG_LAUNCH_OPTS=0  # -O
+FLAG_LAUNCH_OPTS=0  # -O: generate Steam launch options
+FLAG_RECORD=0       # -R: record last game (from Steam)
+FLAG_REPLAY_GAME=0  # -r: replay last recorded game inside gamescope
 
 # ---------------- helpers ----------------
 require_cmd() {
@@ -128,7 +173,13 @@ Options:
   -p        Print saved config summary and exit.
   -k        Kill any running gamescope processes and exit.
   -d        Detach: start gamescope/Steam in the background and return immediately.
-  -O        Print ready-to-paste Steam per-game launch options for current config and exit.
+  -O        Interactively generate ready-to-paste Steam per-game launch options and exit.
+  -R        Record the game being launched (Steam/Proton env + command) and then run it.
+            Intended for use from Steam launch options, e.g.:
+              smtty -R gamemoderun %command% -novid +fps_max 0 -high -dx12
+  -r        Replay last recorded game instead of Steam Gamepad UI when starting gamescope.
+            Uses recorded Proton pipeline under gamescope.
+            Typically used together with -l from a bare KMS TTY.
 
 Environment:
   STEAM_CMD_OVERRIDE='steam -gamepadui'
@@ -144,6 +195,8 @@ Config:
   $CONFIG_FILE
       Stores DRM output, resolution, stretch flag, gamescope display rate,
       VRR / HDR settings, PipeWire debug level, LD_PRELOAD handling, and Steam type.
+  $LAST_GAME_FILE
+      Stores last recorded game env + command (set via -R, used via -r).
 
 Notes:
   - Can be run from a bare TTY (KMS mode) or from inside a compositor
@@ -200,7 +253,6 @@ load_config() {
     . "$CONFIG_FILE"
     HAVE_CONFIG=1
   fi
-  # Backward compatibility: old configs won't have these
   PIPEWIRE_DEBUG_MODE=${PIPEWIRE_DEBUG_MODE:-inherit}
   FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
   LD_PRELOAD_MODE=${LD_PRELOAD_MODE:-inherit}
@@ -234,7 +286,6 @@ choose_drm_output() {
     short=${dir##*/}
     short=${short#card*-}
 
-    # Read all modes and pick the largest WxH by area
     native_line="unknown"
     local max_area=0
     local mline mw mh area
@@ -300,7 +351,6 @@ choose_drm_output() {
 }
 
 choose_resolution_profile() {
-  # Start from native as baseline
   GAME_W=$NATIVE_W
   GAME_H=$NATIVE_H
   STRETCH_FLAG="none"
@@ -398,7 +448,6 @@ choose_gamescope_rate() {
 choose_vrr_hdr_and_steamos() {
   echo "Optional gamescope features:"
 
-  # VRR / adaptive sync
   local vrr
   vrr=$(read_default "Enable gamescope adaptive sync / VRR? (0 = no, 1 = yes)" "$ADAPTIVE_SYNC")
   if [[ "$vrr" == "1" ]]; then
@@ -407,7 +456,6 @@ choose_vrr_hdr_and_steamos() {
     ADAPTIVE_SYNC=0
   fi
 
-  # HDR
   local hdr
   hdr=$(read_default "Enable gamescope HDR output? (0 = no, 1 = yes)" "$ENABLE_GAMESCOPE_HDR")
   if [[ "$hdr" == "1" ]]; then
@@ -492,11 +540,49 @@ choose_ld_preload_mode() {
 
 print_steam_launch_options() {
   if (( HAVE_CONFIG == 0 )); then
-    echo "No saved config; run 'smtty -n -O' first to create one."
+    echo "No saved config; run 'smtty -n -O' first."
     exit 1
   fi
 
-  echo "Steam per-game launch options (nested under your compositor):"
+  echo "Steam per-game launch options generator"
+  echo
+
+  echo "Enter your current Steam launch options for this game."
+  echo "Example: gamemoderun %command% -novid +fps_max 0 -high -dx12"
+  read -rp "Current launch options (empty = just %command%): " CURRENT_LAUNCH_OPTS || exit 1
+
+  if [[ -z "$CURRENT_LAUNCH_OPTS" ]]; then
+    CURRENT_LAUNCH_OPTS='%command%'
+  else
+    if [[ "$CURRENT_LAUNCH_OPTS" != *"%command%"* ]]; then
+      echo "Note: your launch options did not contain %command%; appending at the end."
+      CURRENT_LAUNCH_OPTS="$CURRENT_LAUNCH_OPTS %command%"
+    fi
+  fi
+
+  echo
+
+  # Decide whether to prefix with flatpak-spawn --host
+  local use_flatpak_prefix=0
+  local ans
+
+  if [[ "${STEAM_TYPE:-native}" == "flatpak" ]]; then
+    echo "smtty config detected Steam Flatpak."
+    read -rp "Prefix with 'flatpak-spawn --host' for this game? [Y/n]: " ans || exit 1
+    case "$ans" in
+      [nN]*) use_flatpak_prefix=0 ;;
+      *)     use_flatpak_prefix=1 ;;
+    esac
+  else
+    read -rp "Is this game using Steam Flatpak? [y/N]: " ans || exit 1
+    case "$ans" in
+      [yY]*) use_flatpak_prefix=1 ;;
+      *)     use_flatpak_prefix=0 ;;
+    esac
+  fi
+
+  echo
+  echo "Generated Steam launch options (nested gamescope, no Gamepad UI):"
   echo
 
   local args=()
@@ -520,8 +606,6 @@ print_steam_launch_options() {
     args+=(--hdr-enabled --hdr-itm-enable --hdr-itm-target-nits "$GAMESCOPE_HDR_NITS")
   fi
 
-  # No force-grab cursor here; this is intended for nested use via Steam.
-
   local env_prefix=""
   if [[ "${PIPEWIRE_DEBUG_MODE:-inherit}" != "inherit" ]]; then
     env_prefix+="PIPEWIRE_DEBUG=$PIPEWIRE_DEBUG_MODE "
@@ -530,28 +614,95 @@ print_steam_launch_options() {
     env_prefix+='LD_PRELOAD="" '
   fi
 
+  # Print the full launch line
   printf '%s' "$env_prefix"
-  printf 'gamescope'
+  if (( use_flatpak_prefix )); then
+    printf 'flatpak-spawn --host gamescope'
+  else
+    printf 'gamescope'
+  fi
   printf ' %q' "${args[@]}"
-  printf ' -- %%command%%\n'
+  printf ' -- %s\n' "$CURRENT_LAUNCH_OPTS"
 
-  exit 0
+  echo
+  echo "Paste the above line into this game's Steam \"Launch Options\"."
+}
+
+# ---------------- record / replay last game ----------------
+record_last_game() {
+  if (($# == 0)); then
+    echo "smtty -R: missing game command to record." >&2
+    exit 1
+  fi
+
+  mkdir -p "$CONFIG_DIR"
+
+  local app_id="${SteamAppId-${STEAM_COMPAT_APP_ID-}}"
+  local game_id="${SteamGameId-${app_id}}"
+  local compat_id="${STEAM_COMPAT_APP_ID-${app_id}}"
+  local compat_data="${STEAM_COMPAT_DATA_PATH-}"
+  local compat_client="${STEAM_COMPAT_CLIENT_INSTALL_PATH-}"
+  local compat_install="${STEAM_COMPAT_INSTALL_PATH-}"
+
+  if [[ -z "$app_id" || -z "$compat_data" || -z "$compat_client" ]]; then
+    echo "smtty -R: missing Steam/Proton env (SteamAppId/STEAM_COMPAT_*)." >&2
+    echo "Make sure you are running this via Steam launch options: smtty -R %command% ..." >&2
+    exit 1
+  fi
+
+  local cmd_literal="("
+  local arg
+  for arg in "$@"; do
+    printf -v cmd_literal '%s %q' "$cmd_literal" "$arg"
+  done
+  cmd_literal+=" )"
+
+  {
+    printf 'SteamAppId=%q\n' "$app_id"
+    printf 'SteamGameId=%q\n' "$game_id"
+    printf 'STEAM_COMPAT_APP_ID=%q\n' "$compat_id"
+    printf 'STEAM_COMPAT_DATA_PATH=%q\n' "$compat_data"
+    printf 'STEAM_COMPAT_CLIENT_INSTALL_PATH=%q\n' "$compat_client"
+    printf 'STEAM_COMPAT_INSTALL_PATH=%q\n' "$compat_install"
+    printf 'APP_ID=%q\n' "$app_id"
+    printf 'GAME_ID=%q\n' "$game_id"
+    printf 'GAME_CMD_ARR=%s\n' "$cmd_literal"
+  } >"$LAST_GAME_FILE"
+}
+
+load_last_game() {
+  if [[ ! -f "$LAST_GAME_FILE" ]]; then
+    echo "No last-game record found at $LAST_GAME_FILE." >&2
+    echo "Launch a game once from Steam using, for example:" >&2
+    echo "  smtty -R gamemoderun %command% -novid +fps_max 0 -high -dx12" >&2
+    exit 1
+  fi
+
+  # shellcheck disable=SC1090
+  . "$LAST_GAME_FILE"
+
+  if [[ -z "${APP_ID-}" || -z "${STEAM_COMPAT_DATA_PATH-}" || -z "${STEAM_COMPAT_CLIENT_INSTALL_PATH-}" ]]; then
+    echo "Last-game record incomplete; regenerate via smtty -R in Steam." >&2
+    exit 1
+  fi
+
+  if [[ ${#GAME_CMD_ARR[@]} -eq 0 ]]; then
+    echo "Last-game record missing GAME_CMD_ARR; regenerate via smtty -R." >&2
+    exit 1
+  fi
 }
 
 # ---------------- Steam installation detection ----------------
-
 detect_steam_installations() {
   local available=()
   local have_native=0
   local have_flatpak=0
 
-  # Check for native Steam
   if command -v steam >/dev/null 2>&1; then
     available+=("Native Steam (steam)")
     have_native=1
   fi
 
-  # Check for Flatpak Steam
   if command -v flatpak >/dev/null 2>&1 && \
      flatpak list --app 2>/dev/null | grep -q "com.valvesoftware.Steam"; then
     available+=("Steam Flatpak (com.valvesoftware.Steam)")
@@ -564,7 +715,6 @@ detect_steam_installations() {
     exit 1
   fi
 
-  # If only one option is available, use it automatically
   if (( ${#available[@]} == 1 )); then
     if (( have_native )); then
       STEAM_TYPE="native"
@@ -580,7 +730,6 @@ detect_steam_installations() {
     return
   fi
 
-  # Multiple options available, let user choose
   echo "Multiple Steam installations detected:"
   prompt_select "Choose Steam installation:" "${available[@]}"
 
@@ -596,7 +745,6 @@ detect_steam_installations() {
 }
 
 configure_steam_command() {
-  # If user set override, leave it alone
   if [[ -n "${STEAM_CMD_OVERRIDE-}" ]]; then
     return
   fi
@@ -613,10 +761,8 @@ check_deps() {
   MISSING_CMDS=()
   require_cmd gamescope
 
-  # Check Steam based on type
   if [[ "$STEAM_TYPE" == "flatpak" ]]; then
     require_cmd flatpak
-    # Verify the Steam flatpak is actually installed
     if ! flatpak list --app 2>/dev/null | grep -q "com.valvesoftware.Steam"; then
       echo "Error: Steam Flatpak (com.valvesoftware.Steam) is not installed."
       exit 1
@@ -638,6 +784,28 @@ launch_gamescope_session() {
   configure_steam_command
   check_deps
 
+  local inner_cmd=()
+  local inner_label="Steam Gamepad UI"
+
+  if (( FLAG_REPLAY_GAME )); then
+    load_last_game
+
+    export SteamAppId="$APP_ID"
+    export SteamGameId="${GAME_ID:-$APP_ID}"
+    export STEAM_COMPAT_APP_ID
+    export STEAM_COMPAT_DATA_PATH
+    export STEAM_COMPAT_CLIENT_INSTALL_PATH
+    if [[ -n "${STEAM_COMPAT_INSTALL_PATH-}" ]]; then
+      export STEAM_COMPAT_INSTALL_PATH
+    fi
+
+    inner_cmd=("${GAME_CMD_ARR[@]}")
+    inner_label="Last recorded game (Proton pipeline)"
+  else
+    inner_cmd=("${STEAM_CMD_ARR[@]}")
+    inner_label="Steam Gamepad UI (Big Picture)"
+  fi
+
   echo
   echo "Launching gamescope:"
   echo "  Session mode:          $SESSION_MODE (kms = bare VT, nested = under compositor)"
@@ -653,6 +821,7 @@ launch_gamescope_session() {
   echo "  Force cursor grab:     ${FORCE_GRAB_CURSOR} (KMS only)"
   echo "  PipeWire debug mode:   ${PIPEWIRE_DEBUG_MODE}"
   echo "  LD_PRELOAD mode:       ${LD_PRELOAD_MODE:-inherit}"
+  echo "  Inner payload:         $inner_label"
   echo "  Detach mode:           ${FLAG_DETACH}"
   echo
 
@@ -661,7 +830,6 @@ launch_gamescope_session() {
   args+=(-W "$NATIVE_W" -H "$NATIVE_H")
   args+=(-w "$GAME_W" -h "$GAME_H")
 
-  # KMS-only output selection
   if [[ "$SESSION_MODE" == "kms" ]]; then
     args+=(-O "$DRM_SHORT")
   fi
@@ -682,7 +850,6 @@ launch_gamescope_session() {
     args+=(--hdr-enabled --hdr-itm-enable --hdr-itm-target-nits "$GAMESCOPE_HDR_NITS")
   fi
 
-  # Only force grab in KMS mode; nested + overlays can break relative input
   if (( FORCE_GRAB_CURSOR == 1 )) && [[ "$SESSION_MODE" == "kms" ]]; then
     args+=(--force-grab-cursor)
   fi
@@ -691,36 +858,28 @@ launch_gamescope_session() {
   printf 'gamescope'
   printf ' %q' "${args[@]}"
   printf ' --'
-  printf ' %q' "${STEAM_CMD_ARR[@]}"
+  printf ' %q' "${inner_cmd[@]}"
   printf '\n\n'
 
-  # Apply PipeWire debug mode for gamescope only
-  # "inherit" leaves PIPEWIRE_DEBUG unchanged (system/env default).
-  # Any numeric value overrides it.
   if [[ "${PIPEWIRE_DEBUG_MODE:-inherit}" != "inherit" ]]; then
     export PIPEWIRE_DEBUG="$PIPEWIRE_DEBUG_MODE"
   fi
 
-  # Apply LD_PRELOAD mode for gamescope / Steam
-  # "inherit" leaves LD_PRELOAD unchanged.
-  # "clear" exports LD_PRELOAD="" to strip inherited overlays/shims.
   if [[ "${LD_PRELOAD_MODE:-inherit}" == "clear" ]]; then
     export LD_PRELOAD=""
   fi
 
   if (( FLAG_DETACH )); then
-    # Detached mode: run gamescope in background, detach from terminal.
-    # Requires "setsid" (usually in util-linux).
     if command -v setsid >/dev/null 2>&1; then
-      setsid gamescope "${args[@]}" -- "${STEAM_CMD_ARR[@]}" >/dev/null 2>&1 &
+      setsid gamescope "${args[@]}" -- "${inner_cmd[@]}" >/dev/null 2>&1 &
     else
-      gamescope "${args[@]}" -- "${STEAM_CMD_ARR[@]}" >/dev/null 2>&1 &
+      gamescope "${args[@]}" -- "${inner_cmd[@]}" >/dev/null 2>&1 &
     fi
     echo "gamescope started in detached mode with PID $!."
     echo "Use 'smtty -k' to kill any running gamescope processes."
     exit 0
   else
-    exec gamescope "${args[@]}" -- "${STEAM_CMD_ARR[@]}"
+    exec gamescope "${args[@]}" -- "${inner_cmd[@]}"
   fi
 }
 
@@ -734,11 +893,6 @@ interactive_new_config() {
   choose_pipewire_debug
   choose_ld_preload_mode
   save_config
-
-  if (( FLAG_LAUNCH_OPTS )); then
-    print_steam_launch_options
-  fi
-
   launch_gamescope_session
 }
 
@@ -750,7 +904,6 @@ run_from_current_config() {
     interactive_new_config
   fi
 
-  # Set defaults if not set
   if [[ -z "${STEAM_TYPE:-}" ]]; then
     STEAM_TYPE="native"
   fi
@@ -759,7 +912,6 @@ run_from_current_config() {
   FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
   LD_PRELOAD_MODE=${LD_PRELOAD_MODE:-inherit}
 
-  # Validate that the saved Steam type is still available
   if [[ "$STEAM_TYPE" == "flatpak" ]]; then
     if ! command -v flatpak >/dev/null 2>&1 || \
        ! flatpak list --app 2>/dev/null | grep -q "com.valvesoftware.Steam"; then
@@ -775,11 +927,63 @@ run_from_current_config() {
     fi
   fi
 
-  if (( FLAG_LAUNCH_OPTS )); then
-    print_steam_launch_options
+  launch_gamescope_session
+}
+
+generate_launch_opts() {
+  if (( HAVE_CONFIG == 0 || FLAG_NEW )); then
+    detect_session_mode
+    detect_steam_installations
+    choose_drm_output
+    choose_resolution_profile
+    choose_gamescope_rate
+    choose_vrr_hdr_and_steamos
+    choose_pipewire_debug
+    choose_ld_preload_mode
+    save_config
+    HAVE_CONFIG=1
   fi
 
-  launch_gamescope_session
+  print_steam_launch_options
+  exit 0
+}
+
+handle_last_with_replay_menu() {
+  if (( HAVE_CONFIG == 0 )); then
+    echo "No saved smtty config; run 'smtty -n' first." >&2
+    exit 1
+  fi
+
+  if [[ ! -f "$LAST_GAME_FILE" ]]; then
+    echo "No last-game record; use smtty -R in Steam first." >&2
+    exit 1
+  fi
+
+  echo
+  echo "smtty last-config + replay mode:"
+  echo "  1) Run last recorded game only (using recorded Proton pipeline)."
+  echo "  2) Kill Steam and launch Steam Gamepad UI (Big Picture) instead."
+  local choice
+  while :; do
+    read -rp "Choose [1/2]: " choice || exit 1
+    case "$choice" in
+      1)
+        FLAG_REPLAY_GAME=1
+        run_from_current_config
+        return
+        ;;
+      2)
+        echo "Killing Steam..."
+        pkill steam >/dev/null 2>&1 || true
+        FLAG_REPLAY_GAME=0
+        run_from_current_config
+        return
+        ;;
+      *)
+        echo "Invalid choice."
+        ;;
+    esac
+  done
 }
 
 kill_gamescope() {
@@ -796,7 +1000,7 @@ if [[ ${UID:-$(id -u)} -eq 0 ]]; then
   exit 1
 fi
 
-while getopts ":hnlpkdO" opt; do
+while getopts ":hnlpkdORr" opt; do
   case "$opt" in
     h) FLAG_HELP=1 ;;
     n) FLAG_NEW=1 ;;
@@ -805,6 +1009,8 @@ while getopts ":hnlpkdO" opt; do
     k) FLAG_KILL=1 ;;
     d) FLAG_DETACH=1 ;;
     O) FLAG_LAUNCH_OPTS=1 ;;
+    R) FLAG_RECORD=1 ;;
+    r) FLAG_REPLAY_GAME=1 ;;
     \?) echo "Unknown option: -$OPTARG"; exit 1 ;;
   esac
 done
@@ -822,23 +1028,41 @@ fi
 
 load_config
 
+# -R: record last game and then exec the provided command (for Steam launch options)
+if (( FLAG_RECORD )); then
+  record_last_game "$@"
+  exec "$@"
+fi
+
+# -O: just generate Steam launch options and exit
+if (( FLAG_LAUNCH_OPTS )); then
+  generate_launch_opts
+fi
+
 if (( FLAG_PRINT )); then
   print_config_summary
   exit 0
-fi
-
-if (( FLAG_NEW )); then
-  interactive_new_config
 fi
 
 if (( FLAG_LAST )); then
   if (( HAVE_CONFIG == 0 )); then
     echo "No saved config; doing new interactive setup."
     interactive_new_config
-  else
-    print_config_summary
-    run_from_current_config
+    exit 0
   fi
+
+  if (( FLAG_REPLAY_GAME )); then
+    handle_last_with_replay_menu
+    exit 0
+  else
+    run_from_current_config
+    exit 0
+  fi
+fi
+
+if (( FLAG_NEW )); then
+  interactive_new_config
+  exit 0
 fi
 
 if (( HAVE_CONFIG )); then
@@ -846,15 +1070,11 @@ if (( HAVE_CONFIG )); then
   echo "Found saved smtty config."
   print_config_summary
   echo
-  if (( FLAG_LAUNCH_OPTS )); then
-    run_from_current_config
-  else
-    read -rp "Use last settings? [y/N]: " ans || exit 1
-    case "$ans" in
-      [yY]) run_from_current_config ;;
-      *)    interactive_new_config ;;
-    esac
-  fi
+  read -rp "Use last settings? [y/N]: " ans || exit 1
+  case "$ans" in
+    [yY]) run_from_current_config ;;
+    *)    interactive_new_config ;;
+  esac
 else
   interactive_new_config
 fi
