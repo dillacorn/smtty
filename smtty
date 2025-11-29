@@ -47,20 +47,31 @@
 #
 #   -S
 #     Kill any running Steam client before launching gamescope (no questions).
-#
-# Gamescope backend:
-#   smtty can optionally use either:
-#     - Direct gamescope (default, portable)
-#     - ChimeraOS gamescope-session-plus "steam" session (Arch-based only, KMS TTY only)
-#   The backend is selected during interactive setup (-n) and saved in config.
-#   Chimera backend requires:
-#     - Arch / Arch-based system (AUR layout)
-#     - gamescope-session-git
-#     - gamescope-session-steam-git
-#     - gamescope (from official repo or a provider like gamescope-plus)
-#   smtty never installs these itself; it only tells you what to install.
 
 set -euo pipefail
+
+# ---------------- colors / logging ----------------
+RED=$'\033[0;31m'
+YELLOW=$'\033[1;33m'
+GREEN=$'\033[0;32m'
+BLUE=$'\033[0;34m'
+NC=$'\033[0m'
+
+print_error() {
+  printf '%s[ERROR]%s %s\n' "$RED" "$NC" "$*" >&2
+}
+
+print_warn() {
+  printf '%s[WARN]%s %s\n' "$YELLOW" "$NC" "$*"
+}
+
+print_info() {
+  printf '%s[INFO]%s %s\n' "$BLUE" "$NC" "$*"
+}
+
+print_success() {
+  printf '%s[OK]%s %s\n' "$GREEN" "$NC" "$*"
+}
 
 # ---------------- Steam command (Gamepad UI) ----------------
 # Optional override:
@@ -76,11 +87,6 @@ STEAM_TYPE=""  # "native" or "flatpak"
 
 # Session mode: "kms" (bare VT) or "nested" (X11/Wayland compositor)
 SESSION_MODE="kms"
-
-# Gamescope backend:
-#   "vanilla" = direct gamescope (default)
-#   "chimera" = gamescope-session-plus steam session (Arch-only, KMS-only)
-GAMESCOPE_BACKEND="vanilla"
 
 # ---------------- config paths ----------------
 CONFIG_DIR="$HOME/.config/smtty"
@@ -100,10 +106,10 @@ STRETCH_FLAG="none"   # "none" | "stretch"
 G_FPS=0               # gamescope -r (target display refresh, Hz; 0 = unlimited)
 
 # VRR / HDR / cursor flags
-ADAPTIVE_SYNC=0          # 0/1 -> --adaptive-sync (vanilla) or ADAPTIVE_SYNC env (chimera)
-ENABLE_GAMESCOPE_HDR=0   # 0/1 -> --hdr-enabled/ITM or ENABLE_GAMESCOPE_HDR env
-GAMESCOPE_HDR_NITS=1000  # used with --hdr-itm-target-nits / GAMESCOPE_HDR_NITS env
-FORCE_GRAB_CURSOR=0      # 0/1 -> --force-grab-cursor (KMS only, vanilla only)
+ADAPTIVE_SYNC=0          # 0/1 -> --adaptive-sync
+ENABLE_GAMESCOPE_HDR=0   # 0/1 -> --hdr-enabled/ITM
+GAMESCOPE_HDR_NITS=1000  # used with --hdr-itm-target-nits
+FORCE_GRAB_CURSOR=0      # 0/1 -> --force-grab-cursor (KMS only)
 
 # PipeWire debug control for gamescope
 # "inherit" = do not set PIPEWIRE_DEBUG (respect system / environment)
@@ -115,7 +121,7 @@ PIPEWIRE_DEBUG_MODE="inherit"
 
 # LD_PRELOAD handling for gamescope/Steam
 # "inherit" = do not modify LD_PRELOAD
-# "clear"   = export LD_PRELOAD="" before launching gamescope/session
+# "clear"   = export LD_PRELOAD="" before launching gamescope
 LD_PRELOAD_MODE="inherit"
 
 MISSING_CMDS=()
@@ -218,22 +224,14 @@ Environment:
 Config:
   $CONFIG_FILE
       Stores DRM output, resolution, stretch flag, gamescope display rate,
-      VRR / HDR settings, PipeWire debug level, LD_PRELOAD handling, Steam type,
-      and gamescope backend (direct vs gamescope-session-plus).
+      VRR / HDR settings, PipeWire debug level, LD_PRELOAD handling, Steam type.
   $LAST_GAME_FILE
       Stores last recorded game env + command (set via -R, used via -r).
-
-Gamescope backend:
-  smtty can use:
-    - Direct gamescope (portable, default)
-    - ChimeraOS gamescope-session-plus "steam" session (Arch-based only, KMS TTY only)
-  Backend is selected in interactive setup (-n) and saved in config.
 
 Notes:
   - Can be run from a bare TTY (KMS mode) or from inside a compositor
     (Hyprland, Sway, KDE, GNOME, etc.). Resolution and scaling are always
-    applied via gamescope runtime flags or gamescope-session-plus env, not
-    permanent display config writes.
+    applied via gamescope runtime flags, not permanent display config writes.
 EOF
 }
 
@@ -256,7 +254,6 @@ print_config_summary() {
   echo "  gamescope force grab:     $FORCE_GRAB_CURSOR"
   echo "  PipeWire debug mode:      $PIPEWIRE_DEBUG_MODE (inherit or 0–3)"
   echo "  LD_PRELOAD mode:          ${LD_PRELOAD_MODE:-inherit} (inherit or clear)"
-  echo "  Gamescope backend:        ${GAMESCOPE_BACKEND:-vanilla} (vanilla|chimera)"
 }
 
 save_config() {
@@ -277,7 +274,6 @@ GAMESCOPE_HDR_NITS=$GAMESCOPE_HDR_NITS
 FORCE_GRAB_CURSOR=$FORCE_GRAB_CURSOR
 PIPEWIRE_DEBUG_MODE=$PIPEWIRE_DEBUG_MODE
 LD_PRELOAD_MODE=$LD_PRELOAD_MODE
-GAMESCOPE_BACKEND=$GAMESCOPE_BACKEND
 EOF
 }
 
@@ -290,7 +286,6 @@ load_config() {
   PIPEWIRE_DEBUG_MODE=${PIPEWIRE_DEBUG_MODE:-inherit}
   FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
   LD_PRELOAD_MODE=${LD_PRELOAD_MODE:-inherit}
-  GAMESCOPE_BACKEND=${GAMESCOPE_BACKEND:-vanilla}
 }
 
 detect_session_mode() {
@@ -299,27 +294,6 @@ detect_session_mode() {
   else
     SESSION_MODE="kms"
   fi
-}
-
-is_arch_like() {
-  local id=""
-  local id_like=""
-  if [[ -r /etc/os-release ]]; then
-    # shellcheck disable=SC1091
-    . /etc/os-release
-    id=${ID-}
-    id_like=${ID_LIKE-}
-  fi
-
-  case "$id" in
-    arch|artix|endeavouros|manjaro|garuda) return 0 ;;
-  esac
-
-  case "$id_like" in
-    *arch*) return 0 ;;
-  esac
-
-  return 1
 }
 
 # ---------------- output / resolution selection ----------------
@@ -364,7 +338,7 @@ choose_drm_output() {
   done
 
   if ((${#entries[@]} == 0)); then
-    echo "No *connected* DRM outputs found under /sys/class/drm."
+    print_error "No *connected* DRM outputs found under /sys/class/drm."
     exit 1
   fi
 
@@ -390,7 +364,7 @@ choose_drm_output() {
     NATIVE_W=${BASH_REMATCH[1]}
     NATIVE_H=${BASH_REMATCH[2]}
   else
-    echo "Failed to parse native mode \"$DRM_NATIVE_MODE\"; expected WxH[@Hz]."
+    print_error "Failed to parse native mode \"$DRM_NATIVE_MODE\"; expected WxH[@Hz]."
     exit 1
   fi
 
@@ -517,7 +491,7 @@ choose_vrr_hdr_and_steamos() {
   if [[ "$hdr" == "1" ]]; then
     ENABLE_GAMESCOPE_HDR=1
     local nits
-    nits=$(read_default "HDR ITM target nits (gamescope --hdr-itm-target-nits / GAMESCOPE_HDR_NITS)" "$GAMESCOPE_HDR_NITS")
+    nits=$(read_default "HDR ITM target nits (gamescope --hdr-itm-target-nits)" "$GAMESCOPE_HDR_NITS")
     if [[ "$nits" =~ ^[0-9]+$ ]]; then
       GAMESCOPE_HDR_NITS=$nits
     else
@@ -590,50 +564,7 @@ choose_ld_preload_mode() {
   echo
   echo "LD_PRELOAD mode set to: $LD_PRELOAD_MODE"
   echo "  inherit = pass through existing LD_PRELOAD"
-  echo "  clear   = export LD_PRELOAD=\"\" before gamescope/session"
-  echo
-}
-
-choose_gamescope_backend() {
-  echo "Gamescope backend selection:"
-
-  if is_arch_like; then
-    echo "  Arch-based system detected."
-    echo "  smtty can use either direct gamescope or ChimeraOS gamescope-session-plus."
-    echo "  gamescope-session-plus behaves like the Steam Deck's embedded session."
-    echo
-    prompt_select "Select gamescope backend:" \
-      "Direct gamescope (recommended default, portable)" \
-      "ChimeraOS gamescope-session-plus 'steam' session (Arch-only, KMS TTY only)"
-    case "$REPLY" in
-      1) GAMESCOPE_BACKEND="vanilla" ;;
-      2) GAMESCOPE_BACKEND="chimera" ;;
-      *) GAMESCOPE_BACKEND="vanilla" ;;
-    esac
-
-    if [[ "$GAMESCOPE_BACKEND" == "chimera" ]]; then
-      if ! command -v gamescope-session-plus >/dev/null 2>&1; then
-        echo
-        echo "gamescope-session-plus binary not found in PATH."
-        echo "On Arch-based systems, install the required AUR packages manually, for example:"
-        echo "  paru -S gamescope-session-git gamescope-session-steam-git"
-        echo "  yay  -S gamescope-session-git gamescope-session-steam-git"
-        echo
-        echo "smtty will fall back to direct gamescope until gamescope-session-plus is installed."
-      fi
-    fi
-  else
-    echo "Your system does not look Arch-based."
-    echo "smtty's gamescope-session-plus integration currently expects the Arch AUR packages:"
-    echo "  gamescope-session-git, gamescope-session-steam-git"
-    echo
-    echo "On non-Arch systems, you can attempt a manual setup by following ChimeraOS docs:"
-    echo "  https://github.com/ChimeraOS/gamescope-session"
-    echo
-    echo "Direct gamescope will be used as the backend."
-    GAMESCOPE_BACKEND="vanilla"
-  fi
-
+  echo "  clear   = export LD_PRELOAD=\"\" before gamescope"
   echo
 }
 
@@ -730,7 +661,7 @@ print_steam_launch_options() {
 # ---------------- record / replay last game ----------------
 record_last_game() {
   if (($# == 0)); then
-    echo "smtty -R: missing game command to record." >&2
+    print_error "smtty -R: missing game command to record."
     exit 1
   fi
 
@@ -744,7 +675,7 @@ record_last_game() {
   local compat_install="${STEAM_COMPAT_INSTALL_PATH-}"
 
   if [[ -z "$app_id" || -z "$compat_data" || -z "$compat_client" ]]; then
-    echo "smtty -R: missing Steam/Proton env (SteamAppId/STEAM_COMPAT_*)." >&2
+    print_error "smtty -R: missing Steam/Proton env (SteamAppId/STEAM_COMPAT_*)."
     echo "Make sure you are running this via Steam launch options: smtty -R %command% ..." >&2
     exit 1
   fi
@@ -771,9 +702,9 @@ record_last_game() {
 
 load_last_game() {
   if [[ ! -f "$LAST_GAME_FILE" ]]; then
-    echo "No last-game record found at $LAST_GAME_FILE." >&2
-    echo "Launch a game once from Steam using, for example:" >&2
-    echo "  smtty -R gamemoderun %command% -novid +fps_max 0 -high -dx12" >&2
+    print_error "No last-game record found at $LAST_GAME_FILE."
+    echo "Launch a game once from Steam using, for example:"
+    echo "  smtty -R gamemoderun %command% -novid +fps_max 0 -high -dx12"
     exit 1
   fi
 
@@ -781,12 +712,12 @@ load_last_game() {
   . "$LAST_GAME_FILE"
 
   if [[ -z "${APP_ID-}" || -z "${STEAM_COMPAT_DATA_PATH-}" || -z "${STEAM_COMPAT_CLIENT_INSTALL_PATH-}" ]]; then
-    echo "Last-game record incomplete; regenerate via smtty -R in Steam." >&2
+    print_error "Last-game record incomplete; regenerate via smtty -R in Steam."
     exit 1
   fi
 
   if [[ ${#GAME_CMD_ARR[@]} -eq 0 ]]; then
-    echo "Last-game record missing GAME_CMD_ARR; regenerate via smtty -R." >&2
+    print_error "Last-game record missing GAME_CMD_ARR; regenerate via smtty -R."
     exit 1
   fi
 }
@@ -809,7 +740,7 @@ detect_steam_installations() {
   fi
 
   if (( ${#available[@]} == 0 )); then
-    echo "Error: No Steam installation found."
+    print_error "No Steam installation found."
     echo "Please install Steam (native) or Steam Flatpak."
     exit 1
   fi
@@ -817,12 +748,12 @@ detect_steam_installations() {
   if (( ${#available[@]} == 1 )); then
     if (( have_native )); then
       STEAM_TYPE="native"
-      echo "Detected: Native Steam"
+      print_info "Detected: Native Steam"
     elif (( have_flatpak )); then
       STEAM_TYPE="flatpak"
-      echo "Detected: Steam Flatpak"
+      print_info "Detected: Steam Flatpak"
     else
-      echo "Internal error: Unknown Steam type despite one available."
+      print_error "Internal error: Unknown Steam type despite one available."
       exit 1
     fi
     echo
@@ -863,7 +794,7 @@ check_deps() {
   if [[ "$STEAM_TYPE" == "flatpak" ]]; then
     require_cmd flatpak
     if ! flatpak list --app 2>/dev/null | grep -q "com.valvesoftware.Steam"; then
-      echo "Error: Steam Flatpak (com.valvesoftware.Steam) is not installed."
+      print_error "Steam Flatpak (com.valvesoftware.Steam) is not installed."
       exit 1
     fi
   else
@@ -871,7 +802,7 @@ check_deps() {
   fi
 
   if ((${#MISSING_CMDS[@]} > 0)); then
-    echo "Missing required commands:"
+    print_error "Missing required commands:"
     printf '  - %s\n' "${MISSING_CMDS[@]}"
     echo
     echo "Install the missing utilities with your package manager."
@@ -898,13 +829,13 @@ kill_steam_client() {
   local i
   for ((i = 0; i < 40; i++)); do  # ~10 seconds total at 0.25s step
     if ! pgrep -x steam >/dev/null 2>&1; then
-      echo "Steam client stopped."
+      print_success "Steam client stopped."
       return 0
     fi
     sleep 0.25
   done
 
-  echo "Steam still appears to be running after waiting ~10 seconds."
+  print_error "Steam still appears to be running after waiting ~10 seconds."
   echo "Aborting smtty launch to avoid a broken gamescope start."
   exit 1
 }
@@ -996,79 +927,11 @@ launch_vanilla_gamescope() {
     else
       gamescope "${args[@]}" -- "${inner_cmd[@]}" >/dev/null 2>&1 &
     fi
-    echo "gamescope started in detached mode with PID $!."
+    print_success "gamescope started in detached mode with PID $!."
     echo "Use 'smtty -k' to kill any running gamescope processes."
     exit 0
   else
     exec gamescope "${args[@]}" -- "${inner_cmd[@]}"
-  fi
-}
-
-launch_chimera_gamescope_session() {
-  # gamescope-session-plus "steam" session
-  # We map smtty's config to environment variables expected by gamescope-session-plus.
-  # This is KMS-only (bare TTY) and Arch-based only.
-
-  if [[ "$SESSION_MODE" != "kms" ]]; then
-    echo "gamescope-session-plus backend requires a bare KMS TTY. Current session is nested."
-    echo "Falling back to direct gamescope."
-    return 1
-  fi
-
-  if ! command -v gamescope-session-plus >/dev/null 2>&1; then
-    echo "gamescope-session-plus not found in PATH; cannot use Chimera backend."
-    if is_arch_like; then
-      echo "Install the required AUR packages manually, for example:"
-      echo "  paru -S gamescope-session-git gamescope-session-steam-git"
-      echo "  yay  -S gamescope-session-git gamescope-session-steam-git"
-    else
-      echo "On non-Arch systems, see ChimeraOS docs:"
-      echo "  https://github.com/ChimeraOS/gamescope-session"
-    fi
-    echo "Falling back to direct gamescope."
-    return 1
-  fi
-
-  # Map outer and inner resolution to gamescope-session-plus env
-  export SCREEN_WIDTH="$NATIVE_W"
-  export SCREEN_HEIGHT="$NATIVE_H"
-  export INTERNAL_WIDTH="$GAME_W"
-  export INTERNAL_HEIGHT="$GAME_H"
-
-  # VRR / HDR env mapping (from ChimeraOS gamescope-session docs)
-  export ADAPTIVE_SYNC="$ADAPTIVE_SYNC"
-  export ENABLE_GAMESCOPE_HDR="$ENABLE_GAMESCOPE_HDR"
-  export GAMESCOPE_HDR_NITS="$GAMESCOPE_HDR_NITS"
-
-  # We keep PIPEWIRE_DEBUG / LD_PRELOAD behavior the same as vanilla.
-  if [[ "${PIPEWIRE_DEBUG_MODE:-inherit}" != "inherit" ]]; then
-    export PIPEWIRE_DEBUG="$PIPEWIRE_DEBUG_MODE"
-  fi
-
-  if [[ "${LD_PRELOAD_MODE:-inherit}" == "clear" ]]; then
-    export LD_PRELOAD=""
-  fi
-
-  echo "Command:"
-  echo "gamescope-session-plus steam"
-  echo
-  echo "Note:"
-  echo "  - Resolution, VRR, HDR and target nits are passed via SCREEN_*/INTERNAL_* and"
-  echo "    ADAPTIVE_SYNC/ENABLE_GAMESCOPE_HDR/GAMESCOPE_HDR_NITS."
-  echo "  - The Steam client command line is provided by the ChimeraOS steam session."
-  echo
-
-  if (( FLAG_DETACH )); then
-    if command -v setsid >/dev/null 2>&1; then
-      setsid gamescope-session-plus steam >/dev/null 2>&1 &
-    else
-      gamescope-session-plus steam >/dev/null 2>&1 &
-    fi
-    echo "gamescope-session-plus steam started in detached mode with PID $!."
-    echo "Use 'smtty -k' to kill any running gamescope (not the session wrapper itself)."
-    exit 0
-  else
-    exec gamescope-session-plus steam
   fi
 }
 
@@ -1098,43 +961,6 @@ launch_gamescope_session() {
     inner_label="Steam Gamepad UI (Big Picture)"
   fi
 
-  # Decide effective backend for this launch.
-  # - Chimera backend only supports:
-  #     * KMS session (bare TTY)
-  #     * Big Picture / Steam session, NOT direct replay (-r)
-  # - In other cases, we fallback to vanilla gamescope.
-  local backend="$GAMESCOPE_BACKEND"
-
-  if (( FLAG_REPLAY_GAME )); then
-    backend="vanilla"
-  fi
-
-  if [[ "$backend" == "chimera" && "$SESSION_MODE" != "kms" ]]; then
-    echo "gamescope-session-plus backend requires running smtty from a bare TTY (no X11/Wayland)."
-    echo "Current session is nested; using direct gamescope for this launch."
-    backend="vanilla"
-  fi
-
-  if [[ "$backend" == "chimera" ]] && ! is_arch_like; then
-    echo "gamescope-session-plus backend currently expects Arch-based AUR packaging."
-    echo "Using direct gamescope for this launch."
-    backend="vanilla"
-  fi
-
-  if [[ "$backend" == "chimera" ]] && ! command -v gamescope-session-plus >/dev/null 2>&1; then
-    echo "gamescope-session-plus not found in PATH; cannot use Chimera backend for this launch."
-    if is_arch_like; then
-      echo "Install the required AUR packages manually, for example:"
-      echo "  paru -S gamescope-session-git gamescope-session-steam-git"
-      echo "  yay  -S gamescope-session-git gamescope-session-steam-git"
-    else
-      echo "On non-Arch systems, see ChimeraOS docs:"
-      echo "  https://github.com/ChimeraOS/gamescope-session"
-    fi
-    echo "Using direct gamescope for this launch."
-    backend="vanilla"
-  fi
-
   echo
   echo "Launching gamescope:"
   echo "  Session mode:          $SESSION_MODE (kms = bare VT, nested = under compositor)"
@@ -1147,22 +973,14 @@ launch_gamescope_session() {
   echo "  Adaptive sync (VRR):   ${ADAPTIVE_SYNC}"
   echo "  HDR enabled:           ${ENABLE_GAMESCOPE_HDR}"
   echo "  HDR ITM target nits:   ${GAMESCOPE_HDR_NITS}"
-  echo "  Force cursor grab:     ${FORCE_GRAB_CURSOR} (KMS only, vanilla only)"
+  echo "  Force cursor grab:     ${FORCE_GRAB_CURSOR} (KMS only)"
   echo "  PipeWire debug mode:   ${PIPEWIRE_DEBUG_MODE}"
   echo "  LD_PRELOAD mode:       ${LD_PRELOAD_MODE:-inherit}"
   echo "  Inner payload:         $inner_label"
   echo "  Detach mode:           ${FLAG_DETACH}"
-  echo "  Gamescope backend:     ${backend} (vanilla = direct gamescope, chimera = gamescope-session-plus)"
   echo
 
-  if [[ "$backend" == "chimera" ]]; then
-    # Try Chimera; if it fails constraints, we fall back to vanilla inside the function.
-    if ! launch_chimera_gamescope_session; then
-      launch_vanilla_gamescope "${inner_cmd[@]}"
-    fi
-  else
-    launch_vanilla_gamescope "${inner_cmd[@]}"
-  fi
+  launch_vanilla_gamescope "${inner_cmd[@]}"
 }
 
 interactive_new_config() {
@@ -1174,7 +992,6 @@ interactive_new_config() {
   choose_vrr_hdr_and_steamos
   choose_pipewire_debug
   choose_ld_preload_mode
-  choose_gamescope_backend
   save_config
   handle_running_steam_before_launch
   launch_gamescope_session
@@ -1195,18 +1012,17 @@ run_from_current_config() {
   PIPEWIRE_DEBUG_MODE=${PIPEWIRE_DEBUG_MODE:-inherit}
   FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
   LD_PRELOAD_MODE=${LD_PRELOAD_MODE:-inherit}
-  GAMESCOPE_BACKEND=${GAMESCOPE_BACKEND:-vanilla}
 
   if [[ "$STEAM_TYPE" == "flatpak" ]]; then
     if ! command -v flatpak >/dev/null 2>&1 || \
        ! flatpak list --app 2>/dev/null | grep -q "com.valvesoftware.Steam"; then
-      echo "Warning: Saved config uses Steam Flatpak, but it's not available."
+      print_warn "Saved config uses Steam Flatpak, but it's not available."
       detect_steam_installations
       save_config
     fi
   elif [[ "$STEAM_TYPE" == "native" ]]; then
     if ! command -v steam >/dev/null 2>&1; then
-      echo "Warning: Saved config uses native Steam, but it's not available."
+      print_warn "Saved config uses native Steam, but it's not available."
       detect_steam_installations
       save_config
     fi
@@ -1226,7 +1042,6 @@ generate_launch_opts() {
     choose_vrr_hdr_and_steamos
     choose_pipewire_debug
     choose_ld_preload_mode
-    # Backend choice is irrelevant for nested per-game launch options; skip.
     save_config
     HAVE_CONFIG=1
   fi
@@ -1237,12 +1052,12 @@ generate_launch_opts() {
 
 handle_last_with_replay_menu() {
   if (( HAVE_CONFIG == 0 )); then
-    echo "No saved smtty config; run 'smtty -n' first." >&2
+    print_error "No saved smtty config; run 'smtty -n' first."
     exit 1
   fi
 
   if [[ ! -f "$LAST_GAME_FILE" ]]; then
-    echo "No last-game record; use smtty -R in Steam first." >&2
+    print_error "No last-game record; use smtty -R in Steam first."
     exit 1
   fi
 
@@ -1284,7 +1099,7 @@ handle_last_with_replay_menu() {
 
 kill_gamescope() {
   if pkill gamescope >/dev/null 2>&1; then
-    echo "Killed gamescope processes."
+    print_success "Killed gamescope processes."
   else
     echo "No gamescope processes found."
   fi
@@ -1292,7 +1107,7 @@ kill_gamescope() {
 
 # ---------------- main ----------------
 if [[ ${UID:-$(id -u)} -eq 0 ]]; then
-  echo "Do not run as root. Use your regular user account."
+  print_error "Do not run as root. Use your regular user account."
   exit 1
 fi
 
@@ -1308,7 +1123,7 @@ while getopts ":hnlpkdORrS" opt; do
     R) FLAG_RECORD=1 ;;
     r) FLAG_REPLAY_GAME=1 ;;
     S) FLAG_KILL_STEAM=1 ;;
-    \?) echo "Unknown option: -$OPTARG"; exit 1 ;;
+    \?) print_error "Unknown option: -$OPTARG"; exit 1 ;;
   esac
 done
 shift $((OPTIND - 1))
