@@ -8,8 +8,12 @@ A minimal TTY "Steam Machine" launcher that runs Steam Big Picture inside gamesc
 
 - **Make sure “Enable GPU accelerated rendering in web views” is enabled in Steam, or Steam notifications can cover the entire screen with a black image when running under gamescope.**
 
-- **Some games do not like `--force-grab-cursor`; test it per game and per session (DE/WM vs TTY) if you hit cursor or input issues.**
+#### Steam Big Picture overlay cursor quirk (gamescope)
 
-- **If your camera or cursor gets stuck at the screen edge, briefly open then close Steam Big Picture over the game or pause/unpause; if it keeps happening, try `--force-grab-cursor` as a last resort.**
+- On my setup the game only consistently re-grabs **raw mouse input** if the mouse is **moving while I close the Steam Big Picture overlay**.  
+- If I close the overlay with the mouse perfectly still, the game often fails to re-grab the cursor and the **camera or aim can feel stuck or pinned to an edge**.  
+- In other words, the current **dumb workaround** is to **jiggle the mouse while opening and closing Steam Big Picture**.
+
+## Hyprland:
 
 #### Learn about what I did in [Hyprland](https://github.com/hyprwm/Hyprland) before using smtty+gamescope -> [Steam_Launch_Options_Wayland_Hyprland](https://github.com/dillacorn/awtarchy/blob/main/extra_notes/Steam_Launch_Options_Wayland_Hyprland.md)
