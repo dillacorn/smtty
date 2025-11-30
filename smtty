@@ -109,7 +109,7 @@ G_FPS=0               # gamescope -r (target display refresh, Hz; 0 = unlimited)
 ADAPTIVE_SYNC=0          # 0/1 -> --adaptive-sync
 ENABLE_GAMESCOPE_HDR=0   # 0/1 -> --hdr-enabled/ITM
 GAMESCOPE_HDR_NITS=1000  # used with --hdr-itm-target-nits
-FORCE_GRAB_CURSOR=0      # 0/1 -> --force-grab-cursor (KMS only)
+FORCE_GRAB_CURSOR=0      # 0/1 -> --force-grab-cursor
 
 # PipeWire debug control for gamescope
 # "inherit" = do not set PIPEWIRE_DEBUG (respect system / environment)
@@ -252,7 +252,7 @@ print_config_summary() {
   echo "  gamescope HDR enabled:    $ENABLE_GAMESCOPE_HDR"
   echo "  gamescope HDR target nits $GAMESCOPE_HDR_NITS"
   echo "  gamescope force grab:     $FORCE_GRAB_CURSOR"
-  echo "  PipeWire debug mode:      $PIPEWIRE_DEBUG_MODE (inherit or 0–3)"
+  echo "  PipeWire debug mode:      $PIPEWIRE_DEBUG_MODE (inherit or 0-3)"
   echo "  LD_PRELOAD mode:          ${LD_PRELOAD_MODE:-inherit} (inherit or clear)"
 }
 
@@ -523,12 +523,12 @@ choose_vrr_hdr_and_steamos() {
   echo
   echo "Cursor grab:"
   echo "  Mostly useful on bare TTY (KMS). In nested sessions it can make"
-  echo "  mouse input worse if games + overlays already manage grabs."
+  echo "  mouse input worse if games and overlays already manage grabs."
 
   # Strict 0/1 validation for cursor grab
   local fg
   while :; do
-    fg=$(read_default "Force gamescope cursor grab in KMS mode? (0 = no, 1 = yes)" "$FORCE_GRAB_CURSOR")
+    fg=$(read_default "Force gamescope cursor grab? (0 = no, 1 = yes)" "$FORCE_GRAB_CURSOR")
     case "$fg" in
       0|1)
         FORCE_GRAB_CURSOR=$fg
@@ -639,22 +639,35 @@ print_steam_launch_options() {
   fi
 
   echo
-  echo "Generated Steam launch options (nested gamescope, no Gamepad UI):"
-  echo
 
+  # Make sure SESSION_MODE matches the environment this launch line is for.
+  detect_session_mode
+
+  # Build gamescope args to match normal smtty behavior.
   local args=()
   args+=(-f -e)
   args+=(-W "$NATIVE_W" -H "$NATIVE_H")
   args+=(-w "$GAME_W" -h "$GAME_H")
 
+  # In KMS, include explicit DRM output.
+  if [[ "$SESSION_MODE" == "kms" && -n "$DRM_SHORT" ]]; then
+    args+=(-O "$DRM_SHORT")
+  fi
+
+  # Foreground FPS limit.
   if (( G_FPS > 0 )); then
     args+=(-r "$G_FPS")
   fi
 
+  # Background / unfocused FPS limit.
+  args+=(-o 30)
+
+  # Stretch mode.
   if [[ "$STRETCH_FLAG" == "stretch" ]]; then
     args+=(-S stretch)
   fi
 
+  # VRR / HDR.
   if (( ADAPTIVE_SYNC == 1 )); then
     args+=(--adaptive-sync)
   fi
@@ -663,6 +676,12 @@ print_steam_launch_options() {
     args+=(--hdr-enabled --hdr-itm-enable --hdr-itm-target-nits "$GAMESCOPE_HDR_NITS")
   fi
 
+  # Cursor grab, if requested in config.
+  if (( FORCE_GRAB_CURSOR == 1 )); then
+    args+=(--force-grab-cursor)
+  fi
+
+  # Environment prefix for this per-game launch.
   local env_prefix=""
   if [[ "${PIPEWIRE_DEBUG_MODE:-inherit}" != "inherit" ]]; then
     env_prefix+="PIPEWIRE_DEBUG=$PIPEWIRE_DEBUG_MODE "
@@ -671,7 +690,9 @@ print_steam_launch_options() {
     env_prefix+='LD_PRELOAD="" '
   fi
 
-  # Print the full launch line
+  echo "Generated Steam launch options (nested gamescope, no Gamepad UI):"
+  echo
+
   printf '%s' "$env_prefix"
   if (( use_flatpak_prefix )); then
     printf 'flatpak-spawn --host gamescope'
@@ -842,7 +863,7 @@ steam_is_running() {
 }
 
 kill_steam_client() {
-  # If Steam isn't running, nothing to do.
+  # If Steam is not running, nothing to do.
   if ! pgrep -x steam >/dev/null 2>&1; then
     echo "No Steam client processes found."
     return 0
@@ -905,22 +926,32 @@ launch_vanilla_gamescope() {
   local inner_cmd=("$@")
 
   local args=()
+  # Fullscreen + Steam integration.
   args+=(-f -e)
+
+  # Outer (panel) and inner (game) resolutions.
   args+=(-W "$NATIVE_W" -H "$NATIVE_H")
   args+=(-w "$GAME_W" -h "$GAME_H")
 
-  if [[ "$SESSION_MODE" == "kms" ]]; then
+  # In KMS, explicitly select the DRM output (e.g. DP-1).
+  if [[ "$SESSION_MODE" == "kms" && -n "$DRM_SHORT" ]]; then
     args+=(-O "$DRM_SHORT")
   fi
 
+  # Foreground FPS limit.
   if (( G_FPS > 0 )); then
     args+=(-r "$G_FPS")
   fi
 
+  # Background / unfocused FPS limit.
+  args+=(-o 30)
+
+  # Stretch mode.
   if [[ "$STRETCH_FLAG" == "stretch" ]]; then
     args+=(-S stretch)
   fi
 
+  # VRR / HDR.
   if (( ADAPTIVE_SYNC == 1 )); then
     args+=(--adaptive-sync)
   fi
@@ -929,7 +960,8 @@ launch_vanilla_gamescope() {
     args+=(--hdr-enabled --hdr-itm-enable --hdr-itm-target-nits "$GAMESCOPE_HDR_NITS")
   fi
 
-  if (( FORCE_GRAB_CURSOR == 1 )) && [[ "$SESSION_MODE" == "kms" ]]; then
+  # Cursor grab, if requested in config.
+  if (( FORCE_GRAB_CURSOR == 1 )); then
     args+=(--force-grab-cursor)
   fi
 
@@ -940,6 +972,7 @@ launch_vanilla_gamescope() {
   printf ' %q' "${inner_cmd[@]}"
   printf '\n\n'
 
+  # Env control for this gamescope instance only.
   if [[ "${PIPEWIRE_DEBUG_MODE:-inherit}" != "inherit" ]]; then
     export PIPEWIRE_DEBUG="$PIPEWIRE_DEBUG_MODE"
   fi
@@ -1000,7 +1033,7 @@ launch_gamescope_session() {
   echo "  Adaptive sync (VRR):   ${ADAPTIVE_SYNC}"
   echo "  HDR enabled:           ${ENABLE_GAMESCOPE_HDR}"
   echo "  HDR ITM target nits:   ${GAMESCOPE_HDR_NITS}"
-  echo "  Force cursor grab:     ${FORCE_GRAB_CURSOR} (KMS only)"
+  echo "  Force cursor grab:     ${FORCE_GRAB_CURSOR}"
   echo "  PipeWire debug mode:   ${PIPEWIRE_DEBUG_MODE}"
   echo "  LD_PRELOAD mode:       ${LD_PRELOAD_MODE:-inherit}"
   echo "  Inner payload:         $inner_label"
@@ -1043,13 +1076,13 @@ run_from_current_config() {
   if [[ "$STEAM_TYPE" == "flatpak" ]]; then
     if ! command -v flatpak >/dev/null 2>&1 || \
        ! flatpak list --app 2>/dev/null | grep -q "com.valvesoftware.Steam"; then
-      print_warn "Saved config uses Steam Flatpak, but it's not available."
+      print_warn "Saved config uses Steam Flatpak, but it is not available."
       detect_steam_installations
       save_config
     fi
   elif [[ "$STEAM_TYPE" == "native" ]]; then
     if ! command -v steam >/dev/null 2>&1; then
-      print_warn "Saved config uses native Steam, but it's not available."
+      print_warn "Saved config uses native Steam, but it is not available."
       detect_steam_installations
       save_config
     fi
