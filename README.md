@@ -14,6 +14,13 @@ A minimal TTY "Steam Machine" launcher that runs Steam Big Picture inside gamesc
 - If I close the overlay with the mouse perfectly still, the game often fails to re-grab the cursor and the **camera or aim can feel stuck or pinned to an edge**.  
 - In other words, the current **dumb workaround** is to **jiggle the mouse while opening and closing Steam Big Picture** so the game can re-grab the cursor.
 
+# **Demonstration Video**
+
+<img src="smtty_yt_image.png" alt="smtty demonstration thumbnail" width="420">
+
+Watch the demonstration video:  
+https://www.youtube.com/watch?v=r8dZZAY5GDE
+
 ## Hyprland:
 
 #### Learn about what I did in [Hyprland](https://github.com/hyprwm/Hyprland) before using smtty+gamescope -> [Steam_Launch_Options_Wayland_Hyprland](https://github.com/dillacorn/awtarchy/blob/main/extra_notes/Steam_Launch_Options_Wayland_Hyprland.md)
