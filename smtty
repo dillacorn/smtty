@@ -78,6 +78,7 @@ SESSION_MODE="kms"
 # ---------------- config paths ----------------
 CONFIG_DIR="$HOME/.config/smtty"
 CONFIG_FILE="$CONFIG_DIR/config"
+AUDIO_STATE_FILE="$CONFIG_DIR/audio_state"
 
 # ---------------- state ----------------
 DRM_SHORT=""
@@ -110,6 +111,10 @@ PIPEWIRE_DEBUG_MODE="2"
 # "inherit" = do not modify LD_PRELOAD
 # "clear"   = export LD_PRELOAD="" before launching gamescope
 LD_PRELOAD_MODE="clear"
+
+# Temporary audio switching (PulseAudio / PipeWire via pactl)
+AUDIO_SWITCH_ENABLED=0   # 0/1: switch default sink while gamescope runs
+AUDIO_SINK_NAME=""       # sink name to use when AUDIO_SWITCH_ENABLED=1
 
 MISSING_CMDS=()
 HAVE_CONFIG=0
@@ -230,7 +235,7 @@ Config:
   $CONFIG_FILE
       Stores DRM output, resolution, stretch flag, gamescope display rate,
       unfocused background rate, VRR / HDR settings, PipeWire debug level,
-      LD_PRELOAD handling, and Steam type.
+      LD_PRELOAD handling, Steam type, and optional audio sink switching.
 
 Notes:
   - Can be run from a bare TTY (KMS mode) or from inside a compositor
@@ -239,6 +244,63 @@ Notes:
   - By default, smtty will always ask whether to use last settings when
     a config exists, unless you explicitly pass -l.
 EOF
+}
+
+audio_sink_display_name() {
+  local name=$1
+
+  if [[ -z "$name" ]]; then
+    printf '%s\n' ""
+    return 0
+  fi
+
+  if ! command -v pactl >/dev/null 2>&1; then
+    printf '%s\n' "$name"
+    return 0
+  fi
+
+  local desc
+  desc=$(pactl list sinks 2>/dev/null | awk -v target="$name" '
+    $1 == "Name:" {
+      gsub("\r","")
+      current = $2
+    }
+    current == target && $1 == "Description:" {
+      $1 = ""
+      sub(/^ +/, "")
+      gsub("\r","")
+      print
+      exit
+    }
+    current == target && $1 == "device.description" && $2 == "=" {
+      out = ""
+      for (i = 3; i <= NF; ++i) {
+        if (i > 3) out = out " "
+        out = out $i
+      }
+      gsub("\r","", out)
+      print out
+      exit
+    }
+    current == target && $1 == "node.description" && $2 == "=" {
+      out = ""
+      for (i = 3; i <= NF; ++i) {
+        if (i > 3) out = out " "
+        out = out $i
+      }
+      gsub("\r","", out)
+      print out
+      exit
+    }
+  ')
+
+  if [[ -n "$desc" ]]; then
+    desc=${desc#\"}
+    desc=${desc%\"}
+    printf '%s\n' "$desc"
+  else
+    printf '%s\n' "$name"
+  fi
 }
 
 print_config_summary() {
@@ -261,6 +323,13 @@ print_config_summary() {
   echo "  gamescope force grab:     $FORCE_GRAB_CURSOR"
   echo "  PipeWire debug mode:      $PIPEWIRE_DEBUG_MODE (inherit or 0-3)"
   echo "  LD_PRELOAD mode:          ${LD_PRELOAD_MODE:-clear} (inherit or clear)"
+  echo "  Audio switch enabled:     $AUDIO_SWITCH_ENABLED"
+  if (( AUDIO_SWITCH_ENABLED )); then
+    local sink_desc
+    sink_desc=$(audio_sink_display_name "$AUDIO_SINK_NAME")
+    echo "  Audio sink name:          ${AUDIO_SINK_NAME:-"(unset)"}"
+    echo "  Audio sink description:   ${sink_desc:-"(unresolved)"}"
+  fi
 }
 
 save_config() {
@@ -282,6 +351,8 @@ GAMESCOPE_HDR_NITS=$GAMESCOPE_HDR_NITS
 FORCE_GRAB_CURSOR=$FORCE_GRAB_CURSOR
 PIPEWIRE_DEBUG_MODE=$PIPEWIRE_DEBUG_MODE
 LD_PRELOAD_MODE=$LD_PRELOAD_MODE
+AUDIO_SWITCH_ENABLED=$AUDIO_SWITCH_ENABLED
+AUDIO_SINK_NAME=$AUDIO_SINK_NAME
 EOF
 }
 
@@ -295,6 +366,8 @@ load_config() {
   FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
   LD_PRELOAD_MODE=${LD_PRELOAD_MODE:-clear}
   G_FPS_BG=${G_FPS_BG:-0}
+  AUDIO_SWITCH_ENABLED=${AUDIO_SWITCH_ENABLED:-0}
+  AUDIO_SINK_NAME=${AUDIO_SINK_NAME:-""}
 }
 
 detect_session_mode() {
@@ -645,6 +718,199 @@ choose_ld_preload_mode() {
   echo
 }
 
+choose_audio_switch() {
+  echo "Temporary audio output switching (PulseAudio / PipeWire via pactl):"
+
+  if ! command -v pactl >/dev/null 2>&1; then
+    echo "  pactl not found; audio device switching will be disabled."
+    AUDIO_SWITCH_ENABLED=0
+    AUDIO_SINK_NAME=""
+    echo
+    return
+  fi
+
+  # Always default to 0 (disabled) in the prompt, regardless of prior config.
+  local en
+  en=$(read_default "Enable automatic audio output switch while gamescope is running? (0 = no, 1 = yes)" 0)
+
+  if [[ "$en" == "1" ]]; then
+    AUDIO_SWITCH_ENABLED=1
+  else
+    AUDIO_SWITCH_ENABLED=0
+    AUDIO_SINK_NAME=""
+    echo
+    return
+  fi
+
+  mapfile -t sink_lines < <(pactl list short sinks 2>/dev/null || true)
+
+  if ((${#sink_lines[@]} == 0)); then
+    echo "  No sinks found; disabling audio switching."
+    AUDIO_SWITCH_ENABLED=0
+    AUDIO_SINK_NAME=""
+    echo
+    return
+  fi
+
+  local -a sink_names=()
+  local -a sink_descs=()
+  local line name idx
+
+  for line in "${sink_lines[@]}"; do
+    # index name driver sample-rate channels format
+    read -r idx name _ <<<"$line"
+    if [[ -z "$name" ]]; then
+      continue
+    fi
+    sink_names+=("$name")
+    sink_descs+=("$(audio_sink_display_name "$name")")
+  done
+
+  if ((${#sink_names[@]} == 0)); then
+    echo "  No valid sinks parsed; disabling audio switching."
+    AUDIO_SWITCH_ENABLED=0
+    AUDIO_SINK_NAME=""
+    echo
+    return
+  fi
+
+  echo
+  echo "Available audio outputs (PulseAudio / PipeWire sinks):"
+  local i
+  for ((i = 0; i < ${#sink_names[@]}; i++)); do
+    local desc="${sink_descs[i]}"
+    local raw="${sink_names[i]}"
+    if [[ -n "$desc" && "$desc" != "$raw" ]]; then
+      printf '  [%d] %s (%s)\n' "$((i + 1))" "$desc" "$raw"
+    else
+      printf '  [%d] %s\n' "$((i + 1))" "$raw"
+    fi
+  done
+
+  local choice
+  while :; do
+    read -rp "Choose sink to use while gamescope is running [1-${#sink_names[@]}]: " choice || exit 1
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#sink_names[@]} )); then
+      break
+    fi
+    echo "Enter a number between 1 and ${#sink_names[@]}."
+  done
+
+  AUDIO_SINK_NAME=${sink_names[choice-1]}
+
+  echo
+  echo "Audio switcher will use:"
+  echo "  Description: ${sink_descs[choice-1]}"
+  echo "  Name:        ${AUDIO_SINK_NAME}"
+  echo
+}
+
+get_default_sink() {
+  local current=""
+  current=$(pactl get-default-sink 2>/dev/null || true)
+  if [[ -z "$current" ]]; then
+    current=$(pactl info 2>/dev/null | awk -F': ' '/Default Sink:/ {print $2; exit}')
+  fi
+  printf '%s\n' "$current"
+}
+
+audio_switch_can_run() {
+  if (( AUDIO_SWITCH_ENABLED != 1 )); then
+    return 1
+  fi
+  if [[ -z "$AUDIO_SINK_NAME" ]]; then
+    return 1
+  fi
+  if ! command -v pactl >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
+audio_switch_start_for_pid() {
+  local pid=$1
+
+  if ! audio_switch_can_run; then
+    return 0
+  fi
+
+  local original
+  original=$(get_default_sink)
+  if [[ -z "$original" ]]; then
+    print_warn "Could not determine current default sink; skipping audio switch."
+    return 0
+  fi
+
+  if [[ "$original" == "$AUDIO_SINK_NAME" ]]; then
+    return 0
+  fi
+
+  if ! pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx "$AUDIO_SINK_NAME"; then
+    print_warn "Configured audio sink '$AUDIO_SINK_NAME' not found; skipping audio switch."
+    return 0
+  fi
+
+  print_info "Switching default audio sink: $original -> $AUDIO_SINK_NAME"
+  if ! pactl set-default-sink "$AUDIO_SINK_NAME" 2>/dev/null; then
+    print_warn "Failed to switch default sink; leaving audio unchanged."
+    return 0
+  fi
+
+  mkdir -p "$CONFIG_DIR"
+  cat >"$AUDIO_STATE_FILE" <<EOF
+AUDIO_ACTIVE=1
+AUDIO_ORIGINAL_SINK=$original
+AUDIO_TARGET_SINK=$AUDIO_SINK_NAME
+EOF
+
+  (
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep 1
+    done
+    print_info "Restoring default audio sink to $original"
+    pactl set-default-sink "$original" >/dev/null 2>&1 || true
+    rm -f "$AUDIO_STATE_FILE"
+  ) &
+}
+
+audio_restore_from_state() {
+  if ! command -v pactl >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ ! -f "$AUDIO_STATE_FILE" ]]; then
+    return 0
+  fi
+
+  # shellcheck source=/dev/null
+  . "$AUDIO_STATE_FILE"
+
+  local original="${AUDIO_ORIGINAL_SINK:-}"
+  local target="${AUDIO_TARGET_SINK:-}"
+
+  if [[ -z "$original" || -z "$target" ]]; then
+    rm -f "$AUDIO_STATE_FILE"
+    return 0
+  fi
+
+  local current
+  current=$(get_default_sink)
+  if [[ -z "$current" ]]; then
+    rm -f "$AUDIO_STATE_FILE"
+    return 0
+  fi
+
+  if [[ "$current" != "$target" ]]; then
+    # User changed output manually; do not override.
+    rm -f "$AUDIO_STATE_FILE"
+    return 0
+  fi
+
+  print_info "Restoring default audio sink to $original (via smtty -k)"
+  pactl set-default-sink "$original" >/dev/null 2>&1 || true
+  rm -f "$AUDIO_STATE_FILE"
+}
+
 print_steam_launch_options() {
   if (( HAVE_CONFIG == 0 )); then
     echo "No saved config; run 'smtty -n -O' first."
@@ -992,10 +1258,15 @@ launch_vanilla_gamescope() {
     else
       gamescope "${args[@]}" -- "${inner_cmd[@]}" >/dev/null 2>&1 &
     fi
-    print_success "gamescope started in detached mode with PID $!."
+    local gspid=$!
+    audio_switch_start_for_pid "$gspid"
+    print_success "gamescope started in detached mode with PID $gspid."
     echo "Use 'smtty -k' to kill any running gamescope processes."
     exit 0
   else
+    # In the non-detached case, gamescope will inherit this PID via exec,
+    # so watching $$ is equivalent to watching gamescope's lifetime.
+    audio_switch_start_for_pid "$$"
     exec gamescope "${args[@]}" -- "${inner_cmd[@]}"
   fi
 }
@@ -1025,6 +1296,13 @@ launch_gamescope_session() {
   echo "  Force cursor grab:     ${FORCE_GRAB_CURSOR}"
   echo "  PipeWire debug mode:   ${PIPEWIRE_DEBUG_MODE}"
   echo "  LD_PRELOAD mode:       ${LD_PRELOAD_MODE:-clear}"
+  echo "  Audio switch enabled:  ${AUDIO_SWITCH_ENABLED}"
+  if (( AUDIO_SWITCH_ENABLED )); then
+    local sink_desc
+    sink_desc=$(audio_sink_display_name "$AUDIO_SINK_NAME")
+    echo "  Audio sink name:       ${AUDIO_SINK_NAME:-"(unset)"}"
+    echo "  Audio sink desc:       ${sink_desc:-"(unresolved)"}"
+  fi
   echo "  Inner payload:         $inner_label"
   echo "  Detach mode:           ${FLAG_DETACH}"
   echo
@@ -1041,6 +1319,7 @@ interactive_new_config() {
   choose_vrr_hdr_and_steamos
   choose_pipewire_debug
   choose_ld_preload_mode
+  choose_audio_switch
   save_config
   handle_running_steam_before_launch
   launch_gamescope_session
@@ -1062,6 +1341,8 @@ run_from_current_config() {
   FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
   LD_PRELOAD_MODE=${LD_PRELOAD_MODE:-clear}
   G_FPS_BG=${G_FPS_BG:-0}
+  AUDIO_SWITCH_ENABLED=${AUDIO_SWITCH_ENABLED:-0}
+  AUDIO_SINK_NAME=${AUDIO_SINK_NAME:-""}
 
   if [[ "$STEAM_TYPE" == "flatpak" ]]; then
     if ! command -v flatpak >/dev/null 2>&1 || \
@@ -1092,6 +1373,7 @@ generate_launch_opts() {
     choose_vrr_hdr_and_steamos
     choose_pipewire_debug
     choose_ld_preload_mode
+    choose_audio_switch
     save_config
     HAVE_CONFIG=1
   fi
@@ -1101,11 +1383,17 @@ generate_launch_opts() {
 }
 
 kill_gamescope() {
+  local had_gs=0
   if pkill gamescope >/dev/null 2>&1; then
+    had_gs=1
     print_success "Killed gamescope processes."
   else
     echo "No gamescope processes found."
   fi
+
+  audio_restore_from_state
+
+  return $had_gs
 }
 
 # ---------------- main ----------------
