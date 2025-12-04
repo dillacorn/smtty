@@ -1526,6 +1526,12 @@ print_steam_launch_options() {
     env_prefix+='LD_PRELOAD="" '
   fi
 
+  # HDR + Wayland session -> add Proton HDR envs to the launch options
+  # This is Proton-side, not gamescope-side.
+  if (( ENABLE_GAMESCOPE_HDR == 1 )) && [[ -n "${WAYLAND_DISPLAY-}" ]]; then
+    env_prefix+="PROTON_ENABLE_WAYLAND=1 PROTON_ENABLE_HDR=1 "
+  fi
+
   echo "Generated Steam launch options (nested gamescope, no Gamepad UI):"
   echo
 
@@ -1667,11 +1673,13 @@ handle_running_steam_before_launch() {
     return 0
   fi
 
+  # -S: kill Steam without asking
   if (( FLAG_KILL_STEAM )); then
     kill_steam_client
     return 0
   fi
 
+  # -l or -c: never auto-kill, just respect existing Steam
   if (( FLAG_LAST )) || [[ -n "$SELECTED_PROFILE" ]]; then
     return 0
   fi
@@ -1747,6 +1755,13 @@ launch_vanilla_gamescope() {
 
   if [[ "${LD_PRELOAD_MODE:-clear}" == "clear" ]]; then
     export LD_PRELOAD=""
+  fi
+
+  # If HDR is enabled and we are running under a Wayland session,
+  # set Proton HDR env vars so Proton-based games can see HDR.
+  if (( ENABLE_GAMESCOPE_HDR == 1 )) && [[ -n "${WAYLAND_DISPLAY-}" ]]; then
+    export PROTON_ENABLE_WAYLAND=1
+    export PROTON_ENABLE_HDR=1
   fi
 
   if (( FLAG_DETACH )); then
