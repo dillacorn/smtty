@@ -18,7 +18,7 @@ A minimal TTY "Steam Machine" launcher that runs Steam Big Picture inside gamesc
 
 <img src="smtty_yt_image.png" alt="smtty demonstration thumbnail" width="420">
 
-Watch the demonstration video:  (already outdated...lol)
+Watch the demonstration video: (already outdated...lol)    
 https://www.youtube.com/watch?v=r8dZZAY5GDE
 
 ## Hyprland:
