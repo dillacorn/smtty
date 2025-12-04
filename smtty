@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # smtty - Steam Machine launcher (gamescope-only)
-# MODIFIED: Added multiple configuration profile support
 # Can be run from a bare TTY or from an X11/Wayland session (Hyprland, Sway, KDE, GNOME, etc.).
 # Recommended install location:
 #   - $HOME/.local/bin/smtty  (user)
@@ -87,12 +86,11 @@ SESSION_MODE="kms"
 
 # ---------------- config paths ----------------
 CONFIG_DIR="$HOME/.config/smtty"
-CONFIG_FILE="$CONFIG_DIR/config"  # Legacy single-config location
-PROFILES_DIR="$CONFIG_DIR/profiles"  # NEW: Directory for named profiles
-LAST_PROFILE_FILE="$CONFIG_DIR/last_profile"  # NEW: Tracks last used profile
+CONFIG_FILE="$CONFIG_DIR/config"          # Legacy single-config location
+PROFILES_DIR="$CONFIG_DIR/profiles"       # Directory for named profiles
+LAST_PROFILE_FILE="$CONFIG_DIR/last_profile"
 AUDIO_STATE_FILE="$CONFIG_DIR/audio_state"
 
-# NEW: Current profile name
 CURRENT_PROFILE=""
 
 # ---------------- state ----------------
@@ -141,11 +139,11 @@ FLAG_LAST=0
 FLAG_PRINT=0
 FLAG_KILL=0
 FLAG_DETACH=0
-FLAG_LAUNCH_OPTS=0  # -O: generate Steam launch options
-FLAG_KILL_STEAM=0   # -S: kill Steam client before launching (no prompt)
-FLAG_LIST_PROFILES=0  # NEW: -L: list available profiles
-FLAG_DELETE_PROFILE=0  # NEW: -D: delete a profile
-SELECTED_PROFILE=""  # NEW: -c <profile>: use specific profile
+FLAG_LAUNCH_OPTS=0    # -O: generate Steam launch options
+FLAG_KILL_STEAM=0     # -S: kill Steam client before launching (no prompt)
+FLAG_LIST_PROFILES=0  # -L: list available profiles
+FLAG_DELETE_PROFILE=0 # -D: delete a profile
+SELECTED_PROFILE=""   # -c <profile>: use specific profile
 
 # ---------------- helpers ----------------
 require_cmd() {
@@ -223,7 +221,7 @@ read_default() {
 
 print_help() {
   cat <<EOF
-smtty - Steam Machine launcher (gamescope-only) with multi-config support
+smtty - Steam Machine launcher (gamescope-only)
 
 Usage:
   smtty [options]
@@ -254,11 +252,11 @@ Environment:
 
 Config:
   $PROFILES_DIR/<profile_name>.conf
-      Stores named configuration profiles with DRM output, resolution, 
-      stretch flag, gamescope display rate, unfocused background rate, 
-      VRR / HDR settings, PipeWire debug level, LD_PRELOAD handling, 
+      Stores named configuration profiles with DRM output, resolution,
+      stretch flag, gamescope display rate, unfocused background rate,
+      VRR / HDR settings, PipeWire debug level, LD_PRELOAD handling,
       Steam type, and optional audio sink switching.
-  
+
   $LAST_PROFILE_FILE
       Tracks the last used profile name for -l flag.
 
@@ -275,37 +273,34 @@ Notes:
     (Hyprland, Sway, KDE, GNOME, etc.). Resolution and scaling are always
     applied via gamescope runtime flags, not permanent display config writes.
   - Profile names can contain letters, numbers, hyphens, and underscores.
-  - By default, smtty will always ask whether to use last settings when
+  - By default, smtty will ask whether to use last settings when
     a config exists, unless you explicitly pass -l or -c.
 EOF
 }
 
-# NEW: Migrate legacy single config to default profile
+# Migrate legacy single config to default profile
 migrate_legacy_config() {
   if [[ ! -f "$CONFIG_FILE" ]]; then
     return 0
   fi
-  
+
   if [[ -d "$PROFILES_DIR" ]] && [[ -f "$PROFILES_DIR/default.conf" ]]; then
-    # Already migrated
     return 0
   fi
-  
+
   print_info "Migrating legacy config to 'default' profile..."
   mkdir -p "$PROFILES_DIR"
   cp "$CONFIG_FILE" "$PROFILES_DIR/default.conf"
-  echo "default" > "$LAST_PROFILE_FILE"
+  echo "default" >"$LAST_PROFILE_FILE"
   print_success "Migration complete. Old config preserved at: $CONFIG_FILE"
   echo
 }
 
-# NEW: Get profile file path
 get_profile_path() {
   local profile_name=$1
   printf '%s/%s.conf' "$PROFILES_DIR" "$profile_name"
 }
 
-# NEW: Validate profile name
 validate_profile_name() {
   local name=$1
   if [[ ! "$name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
@@ -319,37 +314,37 @@ validate_profile_name() {
   return 0
 }
 
-# NEW: List available profiles
 list_profiles() {
   migrate_legacy_config
-  
+
   if [[ ! -d "$PROFILES_DIR" ]]; then
     echo "No configuration profiles found."
     echo "Create one with: smtty -n"
     return 0
   fi
-  
+
   local profiles=()
   local last_profile=""
-  
+
   if [[ -f "$LAST_PROFILE_FILE" ]]; then
     last_profile=$(<"$LAST_PROFILE_FILE")
   fi
-  
+
   while IFS= read -r -d '' profile_file; do
     local basename="${profile_file##*/}"
     local profile_name="${basename%.conf}"
     profiles+=("$profile_name")
   done < <(find "$PROFILES_DIR" -maxdepth 1 -name "*.conf" -print0 2>/dev/null | sort -z)
-  
+
   if (( ${#profiles[@]} == 0 )); then
     echo "No configuration profiles found."
     echo "Create one with: smtty -n"
     return 0
   fi
-  
+
   echo "Available configuration profiles:"
   echo
+  local profile
   for profile in "${profiles[@]}"; do
     if [[ "$profile" == "$last_profile" ]]; then
       printf '  • %s %s(last used)%s\n' "$profile" "$GREEN" "$NC"
@@ -362,39 +357,62 @@ list_profiles() {
   echo "Delete with: smtty -D <profile_name>"
 }
 
-# NEW: Delete a profile
 delete_profile() {
   local profile_name=$1
-  
+
   if [[ -z "$profile_name" ]]; then
     print_error "Profile name required. Usage: smtty -D <profile_name>"
     exit 1
   fi
-  
+
   local profile_path
   profile_path=$(get_profile_path "$profile_name")
-  
+
   if [[ ! -f "$profile_path" ]]; then
     print_error "Profile '$profile_name' does not exist."
     echo "Available profiles:"
     list_profiles
     exit 1
   fi
-  
+
   local ans
   read -rp "Delete profile '$profile_name'? [y/N]: " ans || exit 1
   case "$ans" in
     [yY])
       rm -f "$profile_path"
       print_success "Profile '$profile_name' deleted."
-      
-      # If this was the last used profile, clear the last profile file
+
+      # If this was the last-used profile, choose a new default if possible
+      local last_profile=""
       if [[ -f "$LAST_PROFILE_FILE" ]]; then
-        local last_profile
         last_profile=$(<"$LAST_PROFILE_FILE")
-        if [[ "$last_profile" == "$profile_name" ]]; then
-          rm -f "$LAST_PROFILE_FILE"
-          print_info "This was your last used profile. Next launch will prompt for profile selection."
+      fi
+
+      if [[ "$last_profile" == "$profile_name" ]]; then
+        local fallback=""
+
+        # Prefer a profile literally named "default" if it exists
+        if [[ -f "$(get_profile_path "default")" ]]; then
+          fallback="default"
+        else
+          # Otherwise pick the first remaining profile (if any)
+          local pfile pbase pname
+          while IFS= read -r -d '' pfile; do
+            pbase="${pfile##*/}"
+            pname="${pbase%.conf}"
+            if [[ -z "$fallback" ]]; then
+              fallback="$pname"
+            fi
+          done < <(find "$PROFILES_DIR" -maxdepth 1 -name "*.conf" -print0 2>/dev/null | sort -z)
+        fi
+
+        if [[ -n "$fallback" ]]; then
+          echo "$fallback" >"$LAST_PROFILE_FILE"
+          print_info "Last profile changed to '$fallback'."
+        else
+          # No profiles left at all
+          rm -f "$LAST_PROFILE_FILE" 2>/dev/null || true
+          print_info "No profiles remain. Next launch will run full setup."
         fi
       fi
       ;;
@@ -405,30 +423,29 @@ delete_profile() {
   esac
 }
 
-# NEW: Prompt for profile name
 prompt_profile_name() {
   local default_name="default"
   local profile_name
-  
+
   echo
   echo "Save this configuration as a named profile."
   echo "Examples: gaming, 4k-monitor, stretched-43, desktop-session"
   echo
-  
+
   while :; do
     read -rp "Profile name [$default_name]: " profile_name || exit 1
-    
+
     if [[ -z "$profile_name" ]]; then
       profile_name="$default_name"
     fi
-    
+
     if ! validate_profile_name "$profile_name"; then
       continue
     fi
-    
+
     local profile_path
     profile_path=$(get_profile_path "$profile_name")
-    
+
     if [[ -f "$profile_path" ]]; then
       local ans
       read -rp "Profile '$profile_name' already exists. Overwrite? [y/N]: " ans || exit 1
@@ -440,43 +457,54 @@ prompt_profile_name() {
       break
     fi
   done
-  
+
   CURRENT_PROFILE="$profile_name"
   echo
   print_info "Will save as profile: $CURRENT_PROFILE"
   echo
 }
 
-# NEW: Select from existing profiles
 select_profile_interactive() {
+  local mode=${1:-use}
+
   migrate_legacy_config
-  
+
   if [[ ! -d "$PROFILES_DIR" ]]; then
     return 1
   fi
-  
+
   local profiles=()
-  local profile_displays=()
-  
+
   while IFS= read -r -d '' profile_file; do
     local basename="${profile_file##*/}"
     local profile_name="${basename%.conf}"
     profiles+=("$profile_name")
-    profile_displays+=("$profile_name")
   done < <(find "$PROFILES_DIR" -maxdepth 1 -name "*.conf" -print0 2>/dev/null | sort -z)
-  
+
   if (( ${#profiles[@]} == 0 )); then
     return 1
   fi
-  
+
   if (( ${#profiles[@]} == 1 )); then
     CURRENT_PROFILE="${profiles[0]}"
+    echo "Only one profile found: $CURRENT_PROFILE"
+    if [[ "$mode" == "use" ]]; then
+      echo "Using this profile."
+    fi
+    echo
     return 0
   fi
-  
+
   echo "Available profiles:"
-  prompt_select "Select profile to use:" "${profile_displays[@]}"
+  local prompt
+  if [[ "$mode" == "delete" ]]; then
+    prompt="Select profile to delete:"
+  else
+    prompt="Select profile to use:"
+  fi
+  prompt_select "$prompt" "${profiles[@]}"
   CURRENT_PROFILE="${profiles[REPLY-1]}"
+  echo
   return 0
 }
 
@@ -550,7 +578,7 @@ print_config_summary() {
 
   echo "$config_label:"
   echo "  Steam type:               ${STEAM_TYPE:-native}"
-  echo "  DRM output:               $DRM_SHORT"
+  echo "  Output:                   $DRM_SHORT"
   echo "  Native mode:              $DRM_NATIVE_MODE"
   echo "  Game resolution:          ${GAME_W}x${GAME_H}"
   echo "  Stretch flag:             $STRETCH_FLAG"
@@ -558,7 +586,7 @@ print_config_summary() {
   echo "  gamescope unfocused rate: $G_FPS_BG Hz (0 = disabled, -o omitted)"
   echo "  gamescope adaptive-sync:  $ADAPTIVE_SYNC"
   echo "  gamescope HDR enabled:    $ENABLE_GAMESCOPE_HDR"
-  echo "  gamescope HDR target nits: $GAMESCOPE_HDR_NITS"
+  echo "  gamescope HDR nits:       $GAMESCOPE_HDR_NITS"
   echo "  gamescope force grab:     $FORCE_GRAB_CURSOR"
   echo "  PipeWire debug mode:      $PIPEWIRE_DEBUG_MODE (inherit or 0-3)"
   echo "  LD_PRELOAD mode:          ${LD_PRELOAD_MODE:-clear} (inherit or clear)"
@@ -573,15 +601,14 @@ print_config_summary() {
 
 save_config() {
   mkdir -p "$PROFILES_DIR"
-  
-  # If no profile name set, prompt for one
+
   if [[ -z "$CURRENT_PROFILE" ]]; then
     prompt_profile_name
   fi
-  
+
   local profile_path
   profile_path=$(get_profile_path "$CURRENT_PROFILE")
-  
+
   cat >"$profile_path" <<EOF
 DRM_SHORT=$DRM_SHORT
 DRM_NATIVE_MODE=$DRM_NATIVE_MODE
@@ -603,67 +630,83 @@ AUDIO_SWITCH_ENABLED=$AUDIO_SWITCH_ENABLED
 AUDIO_SINK_NAME=$AUDIO_SINK_NAME
 EOF
 
-  # Save this as the last used profile
-  echo "$CURRENT_PROFILE" > "$LAST_PROFILE_FILE"
-  
+  echo "$CURRENT_PROFILE" >"$LAST_PROFILE_FILE"
+
   print_success "Configuration saved as profile: $CURRENT_PROFILE"
 }
 
-load_config() {
-  migrate_legacy_config
-  
-  local profile_path=""
-  
-  # If specific profile requested via -c flag
-  if [[ -n "$SELECTED_PROFILE" ]]; then
-    CURRENT_PROFILE="$SELECTED_PROFILE"
-    profile_path=$(get_profile_path "$CURRENT_PROFILE")
-    
-    if [[ ! -f "$profile_path" ]]; then
-      print_error "Profile '$CURRENT_PROFILE' not found at: $profile_path"
-      echo "Available profiles:"
-      list_profiles
-      exit 1
-    fi
-  # If -l flag (use last profile)
-  elif (( FLAG_LAST )) && [[ -f "$LAST_PROFILE_FILE" ]]; then
-    CURRENT_PROFILE=$(<"$LAST_PROFILE_FILE")
-    profile_path=$(get_profile_path "$CURRENT_PROFILE")
-    
-    if [[ ! -f "$profile_path" ]]; then
-      print_warn "Last profile '$CURRENT_PROFILE' no longer exists."
-      HAVE_CONFIG=0
-      return
-    fi
-  # Otherwise, try to load the last used profile for interactive mode
-  elif [[ -f "$LAST_PROFILE_FILE" ]]; then
-    CURRENT_PROFILE=$(<"$LAST_PROFILE_FILE")
-    profile_path=$(get_profile_path "$CURRENT_PROFILE")
-    
-    if [[ ! -f "$profile_path" ]]; then
-      CURRENT_PROFILE=""
-      profile_path=""
-    fi
+load_profile_file() {
+  local profile_path=$1
+
+  if [[ ! -r "$profile_path" ]] || [[ ! -s "$profile_path" ]]; then
+    print_warn "Profile file exists but is not readable or empty: $profile_path"
+    HAVE_CONFIG=0
+    return 1
   fi
-  
-  if [[ -n "$profile_path" ]] && [[ -f "$profile_path" ]]; then
-    # Validate config file is readable and not empty
-    if [[ -r "$profile_path" ]] && [[ -s "$profile_path" ]]; then
-      # shellcheck source=/dev/null
-      . "$profile_path"
-      HAVE_CONFIG=1
-    else
-      print_warn "Profile file exists but is not readable or empty: $profile_path"
-      HAVE_CONFIG=0
-    fi
-  fi
-  
+
+  # shellcheck source=/dev/null
+  . "$profile_path"
+  HAVE_CONFIG=1
+
   PIPEWIRE_DEBUG_MODE=${PIPEWIRE_DEBUG_MODE:-2}
   FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
   LD_PRELOAD_MODE=${LD_PRELOAD_MODE:-clear}
   G_FPS_BG=${G_FPS_BG:-0}
   AUDIO_SWITCH_ENABLED=${AUDIO_SWITCH_ENABLED:-0}
   AUDIO_SINK_NAME=${AUDIO_SINK_NAME:-""}
+
+  return 0
+}
+
+load_profile_by_name() {
+  local name=$1
+  migrate_legacy_config
+
+  if [[ -z "$name" ]]; then
+    HAVE_CONFIG=0
+    return 1
+  fi
+
+  local profile_path
+  profile_path=$(get_profile_path "$name")
+
+  if [[ ! -f "$profile_path" ]]; then
+    print_error "Profile '$name' not found at: $profile_path"
+    echo "Available profiles:"
+    list_profiles
+    exit 1
+  fi
+
+  CURRENT_PROFILE="$name"
+  load_profile_file "$profile_path" || exit 1
+}
+
+load_config_default() {
+  migrate_legacy_config
+  HAVE_CONFIG=0
+
+  if [[ ! -f "$LAST_PROFILE_FILE" ]]; then
+    return 0
+  fi
+
+  local last_profile
+  last_profile=$(<"$LAST_PROFILE_FILE")
+  if [[ -z "$last_profile" ]]; then
+    return 0
+  fi
+
+  local profile_path
+  profile_path=$(get_profile_path "$last_profile")
+
+  if [[ ! -f "$profile_path" ]]; then
+    print_warn "Last profile '$last_profile' no longer exists."
+    CURRENT_PROFILE=""
+    HAVE_CONFIG=0
+    return 0
+  fi
+
+  CURRENT_PROFILE="$last_profile"
+  load_profile_file "$profile_path" || return 0
 }
 
 detect_session_mode() {
@@ -676,7 +719,7 @@ detect_session_mode() {
 
 # ---------------- output / resolution selection ----------------
 choose_drm_output() {
-  echo "Detected *connected* DRM outputs:"
+  echo "Detected *connected* outputs:"
   echo
 
   local entries=()
@@ -748,8 +791,8 @@ choose_drm_output() {
   fi
 
   echo
-  echo "Using DRM output: $DRM_SHORT (native ${NATIVE_W}x${NATIVE_H})"
-  echo "Session mode:     $SESSION_MODE (kms = bare VT, nested = under compositor)"
+  echo "Using output: $DRM_SHORT (native ${NATIVE_W}x${NATIVE_H})"
+  echo "Session mode: $SESSION_MODE (kms = bare VT, nested = under compositor)"
   echo
   if [[ "$SESSION_MODE" == "nested" ]]; then
     echo "Note: running under a compositor. gamescope will be nested as a window"
@@ -870,7 +913,6 @@ choose_gamescope_rate() {
 choose_vrr_hdr_and_steamos() {
   echo "Optional gamescope features:"
 
-  # Strict 0/1 validation for VRR
   local vrr
   while :; do
     vrr=$(read_default "Enable gamescope adaptive sync / VRR? (0 = no, 1 = yes)" "$ADAPTIVE_SYNC")
@@ -885,7 +927,6 @@ choose_vrr_hdr_and_steamos() {
     esac
   done
 
-  # Strict 0/1 validation for HDR
   local hdr
   while :; do
     hdr=$(read_default "Enable gamescope HDR output? (0 = no, 1 = yes)" "$ENABLE_GAMESCOPE_HDR")
@@ -917,7 +958,6 @@ choose_vrr_hdr_and_steamos() {
   echo "  Mostly useful on bare TTY (KMS). In nested sessions it can make"
   echo "  mouse input worse if games and overlays already manage grabs."
 
-  # Strict 0/1 validation for cursor grab
   local fg
   while :; do
     fg=$(read_default "Force gamescope cursor grab? (0 = no, 1 = yes)" "$FORCE_GRAB_CURSOR")
@@ -1025,7 +1065,6 @@ choose_audio_switch() {
     return
   fi
 
-  # Always default to 0 (disabled) in the prompt, regardless of prior config.
   local en
   en=$(read_default "Enable automatic audio output switch while gamescope is running? (0 = no, 1 = yes)" 0)
 
@@ -1053,7 +1092,6 @@ choose_audio_switch() {
   local line name idx
 
   for line in "${sink_lines[@]}"; do
-    # index name driver sample-rate channels format
     read -r idx name _ <<<"$line"
     if [[ -z "$name" ]]; then
       continue
@@ -1159,9 +1197,7 @@ AUDIO_ORIGINAL_SINK=$original
 AUDIO_TARGET_SINK=$AUDIO_SINK_NAME
 EOF
 
-  # Background process to monitor gamescope and restore audio when it exits
   (
-    # Trap to ensure cleanup happens even if background process is killed
     trap 'pactl set-default-sink "$original" >/dev/null 2>&1 || true; rm -f "$AUDIO_STATE_FILE"' EXIT TERM INT
 
     while kill -0 "$pid" 2>/dev/null; do
@@ -1172,7 +1208,6 @@ EOF
     rm -f "$AUDIO_STATE_FILE"
   ) &
 
-  # Detach the background process to prevent it from being killed with parent
   disown 2>/dev/null || true
 }
 
@@ -1185,7 +1220,6 @@ audio_restore_from_state() {
     return 0
   fi
 
-  # Validate audio state file is readable and not empty
   if [[ ! -r "$AUDIO_STATE_FILE" ]] || [[ ! -s "$AUDIO_STATE_FILE" ]]; then
     print_warn "Audio state file exists but is not readable or empty"
     rm -f "$AUDIO_STATE_FILE"
@@ -1211,7 +1245,6 @@ audio_restore_from_state() {
   fi
 
   if [[ "$current" != "$target" ]]; then
-    # User changed output manually; do not override.
     rm -f "$AUDIO_STATE_FILE"
     return 0
   fi
@@ -1248,7 +1281,6 @@ print_steam_launch_options() {
 
   echo
 
-  # Decide whether to prefix with flatpak-spawn --host
   local use_flatpak_prefix=0
   local ans
 
@@ -1269,7 +1301,6 @@ print_steam_launch_options() {
 
   echo
 
-  # Overlay / Steam integration choice (-e)
   local use_steam_integration=0
   echo "Steam overlay / integration mode for this game:"
   prompt_select "Choose integration mode:" \
@@ -1282,36 +1313,29 @@ print_steam_launch_options() {
 
   echo
 
-  # Make sure SESSION_MODE matches the environment this launch line is for.
   detect_session_mode
 
-  # Build gamescope args to match normal smtty behavior (minus -e).
   local args=()
   args+=(-f)
   args+=(-W "$NATIVE_W" -H "$NATIVE_H")
   args+=(-w "$GAME_W" -h "$GAME_H")
 
-  # In KMS, include explicit DRM output.
   if [[ "$SESSION_MODE" == "kms" && -n "$DRM_SHORT" ]]; then
     args+=(-O "$DRM_SHORT")
   fi
 
-  # Foreground FPS limit.
   if (( G_FPS > 0 )); then
     args+=(-r "$G_FPS")
   fi
 
-  # Background / unfocused FPS limit.
   if (( G_FPS_BG > 0 )); then
     args+=(-o "$G_FPS_BG")
   fi
 
-  # Stretch mode.
   if [[ "$STRETCH_FLAG" == "stretch" ]]; then
     args+=(-S stretch)
   fi
 
-  # VRR / HDR.
   if (( ADAPTIVE_SYNC == 1 )); then
     args+=(--adaptive-sync)
   fi
@@ -1320,12 +1344,10 @@ print_steam_launch_options() {
     args+=(--hdr-enabled --hdr-itm-enable --hdr-itm-target-nits "$GAMESCOPE_HDR_NITS")
   fi
 
-  # Cursor grab, if requested in config.
   if (( FORCE_GRAB_CURSOR == 1 )); then
     args+=(--force-grab-cursor)
   fi
 
-  # Environment prefix for this per-game launch.
   local env_prefix=""
   if [[ "${PIPEWIRE_DEBUG_MODE:-2}" != "inherit" ]]; then
     env_prefix+="PIPEWIRE_DEBUG=$PIPEWIRE_DEBUG_MODE "
@@ -1445,7 +1467,6 @@ steam_is_running() {
 }
 
 kill_steam_client() {
-  # If Steam is not running, nothing to do.
   if ! pgrep -x steam >/dev/null 2>&1; then
     echo "No Steam client processes found."
     return 0
@@ -1454,10 +1475,8 @@ kill_steam_client() {
   echo "Stopping Steam client..."
   pkill steam >/dev/null 2>&1 || true
 
-  # Wait for Steam to actually die to avoid races where gamescope
-  # starts while Steam is still shutting down.
   local i
-  for ((i = 0; i < 40; i++)); do  # ~10 seconds total at 0.25s step
+  for ((i = 0; i < 40; i++)); do
     if ! pgrep -x steam >/dev/null 2>&1; then
       print_success "Steam client stopped."
       return 0
@@ -1476,13 +1495,11 @@ handle_running_steam_before_launch() {
   fi
 
   if (( FLAG_KILL_STEAM )); then
-    # Explicit user request via -S: no prompt.
     kill_steam_client
     return 0
   fi
 
   if (( FLAG_LAST )) || [[ -n "$SELECTED_PROFILE" ]]; then
-    # -l or -c is defined as non-interactive: do not prompt or kill.
     return 0
   fi
 
@@ -1504,38 +1521,29 @@ handle_running_steam_before_launch() {
 }
 
 launch_vanilla_gamescope() {
-  # $@: inner command (Steam Gamepad UI)
   local inner_cmd=("$@")
 
   local args=()
-  # Fullscreen + Steam integration for Gamepad UI.
   args+=(-f -e)
-
-  # Outer (panel) and inner (game) resolutions.
   args+=(-W "$NATIVE_W" -H "$NATIVE_H")
   args+=(-w "$GAME_W" -h "$GAME_H")
 
-  # In KMS, explicitly select the DRM output (e.g. DP-1).
   if [[ "$SESSION_MODE" == "kms" && -n "$DRM_SHORT" ]]; then
     args+=(-O "$DRM_SHORT")
   fi
 
-  # Foreground FPS limit.
   if (( G_FPS > 0 )); then
     args+=(-r "$G_FPS")
   fi
 
-  # Background / unfocused FPS limit.
   if (( G_FPS_BG > 0 )); then
     args+=(-o "$G_FPS_BG")
   fi
 
-  # Stretch mode.
   if [[ "$STRETCH_FLAG" == "stretch" ]]; then
     args+=(-S stretch)
   fi
 
-  # VRR / HDR.
   if (( ADAPTIVE_SYNC == 1 )); then
     args+=(--adaptive-sync)
   fi
@@ -1544,7 +1552,6 @@ launch_vanilla_gamescope() {
     args+=(--hdr-enabled --hdr-itm-enable --hdr-itm-target-nits "$GAMESCOPE_HDR_NITS")
   fi
 
-  # Cursor grab, if requested in config.
   if (( FORCE_GRAB_CURSOR == 1 )); then
     args+=(--force-grab-cursor)
   fi
@@ -1556,7 +1563,6 @@ launch_vanilla_gamescope() {
   printf ' %q' "${inner_cmd[@]}"
   printf '\n\n'
 
-  # Env control for this gamescope instance only.
   if [[ "${PIPEWIRE_DEBUG_MODE:-2}" != "inherit" ]]; then
     export PIPEWIRE_DEBUG="$PIPEWIRE_DEBUG_MODE"
   fi
@@ -1577,8 +1583,6 @@ launch_vanilla_gamescope() {
     echo "Use 'smtty -k' to kill any running gamescope processes."
     exit 0
   else
-    # In the non-detached case, gamescope will inherit this PID via exec,
-    # so watching $$ is equivalent to watching gamescope's lifetime.
     audio_switch_start_for_pid "$$"
     exec gamescope "${args[@]}" -- "${inner_cmd[@]}"
   fi
@@ -1627,6 +1631,7 @@ launch_gamescope_session() {
 }
 
 interactive_new_config() {
+  CURRENT_PROFILE=""
   detect_session_mode
   detect_steam_installations
   choose_drm_output
@@ -1712,6 +1717,53 @@ kill_gamescope() {
   return $had_gs
 }
 
+interactive_profile_menu() {
+  detect_session_mode
+  print_config_summary
+  echo
+  echo "Options:"
+  echo "  [1] Use this profile"
+  echo "  [2] Select a different profile"
+  echo "  [3] Create new profile"
+  echo "  [4] Delete a profile"
+
+  local choice=
+  while :; do
+    read -rp "Choose option [1-4]: " choice || exit 1
+    case "$choice" in
+      1)
+        run_from_current_config
+        break
+        ;;
+      2)
+        if select_profile_interactive "use"; then
+          load_profile_by_name "$CURRENT_PROFILE"
+          run_from_current_config
+        else
+          echo "No other profiles available. Creating new profile."
+          interactive_new_config
+        fi
+        break
+        ;;
+      3)
+        interactive_new_config
+        break
+        ;;
+      4)
+        if select_profile_interactive "delete"; then
+          delete_profile "$CURRENT_PROFILE"
+        else
+          echo "No profiles available to delete."
+        fi
+        exit 0
+        ;;
+      *)
+        echo "Enter 1, 2, 3, or 4."
+        ;;
+    esac
+  done
+}
+
 # ---------------- main ----------------
 if [[ ${UID:-$(id -u)} -eq 0 ]]; then
   print_error "Do not run as root. Use your regular user account."
@@ -1757,9 +1809,13 @@ if (( FLAG_KILL )); then
   exit 0
 fi
 
-load_config
+# Load config by explicit -c first, else last_profile
+if [[ -n "$SELECTED_PROFILE" && $FLAG_DELETE_PROFILE -eq 0 ]]; then
+  load_profile_by_name "$SELECTED_PROFILE"
+else
+  load_config_default
+fi
 
-# -O: just generate Steam launch options and exit
 if (( FLAG_LAUNCH_OPTS )); then
   generate_launch_opts
 fi
@@ -1769,8 +1825,7 @@ if (( FLAG_PRINT )); then
   exit 0
 fi
 
-# -c <profile>: use specific profile and launch immediately
-if [[ -n "$SELECTED_PROFILE" ]]; then
+if [[ -n "$SELECTED_PROFILE" && $FLAG_DELETE_PROFILE -eq 0 ]]; then
   if (( HAVE_CONFIG == 0 )); then
     print_error "Profile '$SELECTED_PROFILE' not found."
     echo "Available profiles:"
@@ -1787,8 +1842,6 @@ if (( FLAG_LAST )); then
     interactive_new_config
     exit 0
   fi
-
-  # -l: use last config immediately, no extra prompt
   run_from_current_config
   exit 0
 fi
@@ -1798,50 +1851,18 @@ if (( FLAG_NEW )); then
   exit 0
 fi
 
-# Default interactive mode: prompt to select or create profile
-if (( HAVE_CONFIG )); then
-  detect_session_mode
-  echo "Found saved profile: $CURRENT_PROFILE"
-  print_config_summary
-  echo
-  echo "Options:"
-  echo "  [1] Use this profile"
-  echo "  [2] Select a different profile"
-  echo "  [3] Create new profile"
-  
-  local choice
-  while :; do
-    read -rp "Choose option [1-3]: " choice || exit 1
-    case "$choice" in
-      1)
-        run_from_current_config
-        break
-        ;;
-      2)
-        if select_profile_interactive; then
-          load_config
-          run_from_current_config
-        else
-          echo "No other profiles available. Creating new profile."
-          interactive_new_config
-        fi
-        break
-        ;;
-      3)
-        interactive_new_config
-        break
-        ;;
-      *)
-        echo "Enter 1, 2, or 3."
-        ;;
-    esac
-  done
-else
-  # No profiles exist yet
-  if select_profile_interactive; then
-    load_config
-    run_from_current_config
+# At this point: no special flags, just plain `smtty`.
+# If we don't have a valid last_profile loaded, but profiles exist,
+# pick one and THEN go through the normal menu (do not auto-launch).
+if (( HAVE_CONFIG == 0 )); then
+  if select_profile_interactive "use"; then
+    load_profile_by_name "$CURRENT_PROFILE"
   else
+    # No profiles at all -> full setup wizard
     interactive_new_config
+    exit 0
   fi
 fi
+
+# Now we definitely have a loaded profile, so show the menu.
+interactive_profile_menu
