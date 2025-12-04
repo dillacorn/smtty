@@ -37,6 +37,7 @@
 #
 #   -k
 #     Kill any running gamescope processes and exit.
+#     If a profile defines a POST_CMD, it is run after audio restore.
 #
 #   -d
 #     Detach gamescope (run in background, return to shell).
@@ -128,6 +129,12 @@ LD_PRELOAD_MODE="clear"
 # Temporary audio switching (PulseAudio / PipeWire via pactl)
 AUDIO_SWITCH_ENABLED=0   # 0/1: switch default sink while gamescope runs
 AUDIO_SINK_NAME=""       # sink name to use when AUDIO_SWITCH_ENABLED=1
+
+# Optional hooks tied to the profile:
+#   PRE_CMD  runs before gamescope starts.
+#   POST_CMD runs only when smtty tears down with "smtty -k".
+PRE_CMD=""
+POST_CMD=""
 
 MISSING_CMDS=()
 HAVE_CONFIG=0
@@ -236,6 +243,7 @@ Options:
   -D <name> Delete specified configuration profile.
   -p        Print saved config summary and exit.
   -k        Kill any running gamescope processes and exit.
+            If the active profile defines a POST_CMD, it is run after audio restore.
   -d        Detach: start gamescope/Steam in the background and return immediately.
   -S        Kill any running Steam client before launching gamescope (no prompt).
   -O        Interactively generate ready-to-paste Steam per-game launch options and exit.
@@ -255,7 +263,10 @@ Config:
       Stores named configuration profiles with DRM output, resolution,
       stretch flag, gamescope display rate, unfocused background rate,
       VRR / HDR settings, PipeWire debug level, LD_PRELOAD handling,
-      Steam type, and optional audio sink switching.
+      Steam type, optional audio sink switching, and optional pre/post commands.
+
+      PRE_CMD  runs before gamescope starts.
+      POST_CMD runs only when the session is torn down via "smtty -k".
 
   $LAST_PROFILE_FILE
       Tracks the last used profile name for -l flag.
@@ -576,6 +587,15 @@ print_config_summary() {
     config_label="Profile '$CURRENT_PROFILE'"
   fi
 
+  local pre_display="${PRE_CMD:-}"
+  local post_display="${POST_CMD:-}"
+  if [[ -z "$pre_display" ]]; then
+    pre_display="(none)"
+  fi
+  if [[ -z "$post_display" ]]; then
+    post_display="(none)"
+  fi
+
   echo "$config_label:"
   echo "  Steam type:               ${STEAM_TYPE:-native}"
   echo "  Output:                   $DRM_SHORT"
@@ -597,6 +617,8 @@ print_config_summary() {
     echo "  Audio sink name:          ${AUDIO_SINK_NAME:-"(unset)"}"
     echo "  Audio sink description:   ${sink_desc:-"(unresolved)"}"
   fi
+  echo "  Pre-command:              $pre_display"
+  echo "  Post-command (smtty -k):  $post_display"
 }
 
 save_config() {
@@ -628,6 +650,8 @@ PIPEWIRE_DEBUG_MODE=$PIPEWIRE_DEBUG_MODE
 LD_PRELOAD_MODE=$LD_PRELOAD_MODE
 AUDIO_SWITCH_ENABLED=$AUDIO_SWITCH_ENABLED
 AUDIO_SINK_NAME=$AUDIO_SINK_NAME
+PRE_CMD=$(printf '%q' "$PRE_CMD")
+POST_CMD=$(printf '%q' "$POST_CMD")
 EOF
 
   echo "$CURRENT_PROFILE" >"$LAST_PROFILE_FILE"
@@ -654,6 +678,8 @@ load_profile_file() {
   G_FPS_BG=${G_FPS_BG:-0}
   AUDIO_SWITCH_ENABLED=${AUDIO_SWITCH_ENABLED:-0}
   AUDIO_SINK_NAME=${AUDIO_SINK_NAME:-""}
+  PRE_CMD=${PRE_CMD:-""}
+  POST_CMD=${POST_CMD:-""}
 
   return 0
 }
@@ -1139,6 +1165,24 @@ choose_audio_switch() {
   echo
 }
 
+choose_pre_post_commands() {
+  echo "Optional pre / post shell commands for this profile:"
+  echo "  Pre-command runs before gamescope starts."
+  echo "  Post-command runs only when you tear down the session via 'smtty -k'."
+  echo "  Leave empty to skip."
+  echo
+
+  local pre
+  pre=$(read_default "Pre-command (empty = none)" "${PRE_CMD:-}")
+  PRE_CMD="$pre"
+
+  local post
+  post=$(read_default "Post-command for smtty -k (empty = none)" "${POST_CMD:-}")
+  POST_CMD="$post"
+
+  echo
+}
+
 get_default_sink() {
   local current=""
   current=$(pactl get-default-sink 2>/dev/null || true)
@@ -1252,6 +1296,24 @@ audio_restore_from_state() {
   print_info "Restoring default audio sink to $original (via smtty -k)"
   pactl set-default-sink "$original" >/dev/null 2>&1 || true
   rm -f "$AUDIO_STATE_FILE"
+}
+
+run_pre_hook() {
+  if [[ -n "${PRE_CMD:-}" ]]; then
+    print_info "Running pre-command..."
+    if ! sh -c "$PRE_CMD"; then
+      print_warn "Pre-command failed."
+    fi
+  fi
+}
+
+run_post_hook() {
+  if [[ -n "${POST_CMD:-}" ]]; then
+    print_info "Running post-command (smtty -k)..."
+    if ! sh -c "$POST_CMD"; then
+      print_warn "Post-command failed."
+    fi
+  fi
 }
 
 print_steam_launch_options() {
@@ -1563,6 +1625,8 @@ launch_vanilla_gamescope() {
   printf ' %q' "${inner_cmd[@]}"
   printf '\n\n'
 
+  run_pre_hook
+
   if [[ "${PIPEWIRE_DEBUG_MODE:-2}" != "inherit" ]]; then
     export PIPEWIRE_DEBUG="$PIPEWIRE_DEBUG_MODE"
   fi
@@ -1641,6 +1705,7 @@ interactive_new_config() {
   choose_pipewire_debug
   choose_ld_preload_mode
   choose_audio_switch
+  choose_pre_post_commands
   save_config
   handle_running_steam_before_launch
   launch_gamescope_session
@@ -1664,6 +1729,8 @@ run_from_current_config() {
   G_FPS_BG=${G_FPS_BG:-0}
   AUDIO_SWITCH_ENABLED=${AUDIO_SWITCH_ENABLED:-0}
   AUDIO_SINK_NAME=${AUDIO_SINK_NAME:-""}
+  PRE_CMD=${PRE_CMD:-""}
+  POST_CMD=${POST_CMD:-""}
 
   if [[ "$STEAM_TYPE" == "flatpak" ]]; then
     if ! command -v flatpak >/dev/null 2>&1 || \
@@ -1695,6 +1762,7 @@ generate_launch_opts() {
     choose_pipewire_debug
     choose_ld_preload_mode
     choose_audio_switch
+    choose_pre_post_commands
     save_config
     HAVE_CONFIG=1
   fi
@@ -1713,6 +1781,10 @@ kill_gamescope() {
   fi
 
   audio_restore_from_state
+
+  if (( had_gs )); then
+    run_post_hook
+  fi
 
   return $had_gs
 }
@@ -1804,16 +1876,16 @@ if (( FLAG_DELETE_PROFILE )); then
   exit 0
 fi
 
-if (( FLAG_KILL )); then
-  kill_gamescope
-  exit 0
-fi
-
 # Load config by explicit -c first, else last_profile
 if [[ -n "$SELECTED_PROFILE" && $FLAG_DELETE_PROFILE -eq 0 ]]; then
   load_profile_by_name "$SELECTED_PROFILE"
 else
   load_config_default
+fi
+
+if (( FLAG_KILL )); then
+  kill_gamescope
+  exit 0
 fi
 
 if (( FLAG_LAUNCH_OPTS )); then
