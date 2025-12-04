@@ -703,8 +703,11 @@ load_profile_by_name() {
     exit 1
   fi
 
-  CURRENT_PROFILE="$name"
   load_profile_file "$profile_path" || exit 1
+
+  CURRENT_PROFILE="$name"
+  mkdir -p "$CONFIG_DIR"
+  echo "$name" >"$LAST_PROFILE_FILE"
 }
 
 load_config_default() {
@@ -1735,7 +1738,7 @@ run_from_current_config() {
   POST_CMD=${POST_CMD:-""}
 
   if [[ "$STEAM_TYPE" == "flatpak" ]]; then
-    if ! command -v flatpak >/dev/null 2>&1 || \
+    if ! command -v flatpak >/dev/null 2>/dev/null || \
        ! flatpak list --app 2>/dev/null | grep -q "com.valvesoftware.Steam"; then
       print_warn "Saved config uses Steam Flatpak, but it is not available."
       detect_steam_installations
