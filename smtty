@@ -131,7 +131,7 @@ AUDIO_SWITCH_ENABLED=0   # 0/1: switch default sink while gamescope runs
 AUDIO_SINK_NAME=""       # sink name to use when AUDIO_SWITCH_ENABLED=1
 
 # Optional hooks tied to the profile:
-#   PRE_CMD  runs before gamescope starts.
+#   PRE_CMD  runs asynchronously before gamescope starts.
 #   POST_CMD runs only when smtty tears down with "smtty -k".
 PRE_CMD=""
 POST_CMD=""
@@ -265,7 +265,7 @@ Config:
       VRR / HDR settings, PipeWire debug level, LD_PRELOAD handling,
       Steam type, optional audio sink switching, and optional pre/post commands.
 
-      PRE_CMD  runs before gamescope starts.
+      PRE_CMD  runs asynchronously before gamescope starts.
       POST_CMD runs only when the session is torn down via "smtty -k".
 
   $LAST_PROFILE_FILE
@@ -617,7 +617,7 @@ print_config_summary() {
     echo "  Audio sink name:          ${AUDIO_SINK_NAME:-"(unset)"}"
     echo "  Audio sink description:   ${sink_desc:-"(unresolved)"}"
   fi
-  echo "  Pre-command:              $pre_display"
+  echo "  Pre-command (async):      $pre_display"
   echo "  Post-command (smtty -k):  $post_display"
 }
 
@@ -1167,7 +1167,7 @@ choose_audio_switch() {
 
 choose_pre_post_commands() {
   echo "Optional pre / post shell commands for this profile:"
-  echo "  Pre-command runs before gamescope starts."
+  echo "  Pre-command runs asynchronously before gamescope starts."
   echo "  Post-command runs only when you tear down the session via 'smtty -k'."
   echo "  Leave empty to skip."
   echo
@@ -1299,12 +1299,14 @@ audio_restore_from_state() {
 }
 
 run_pre_hook() {
-  if [[ -n "${PRE_CMD:-}" ]]; then
-    print_info "Running pre-command..."
-    if ! sh -c "$PRE_CMD"; then
-      print_warn "Pre-command failed."
-    fi
+  if [[ -z "${PRE_CMD:-}" ]]; then
+    return 0
   fi
+
+  print_info "Running pre-command (async)..."
+  # Run asynchronously so long-lived commands (like firefox) don't block gamescope.
+  sh -c "$PRE_CMD" &
+  disown 2>/dev/null || true
 }
 
 run_post_hook() {
