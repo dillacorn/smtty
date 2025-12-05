@@ -1975,21 +1975,21 @@ interactive_new_config() {
         ;;
       2)
         if ! choose_drm_output; then
-          step=$((step - 1))
-          if (( step < 1 )); then
-            if (( from_menu )); then
-              echo "Returning to main menu."
-              return 1
-            fi
-            echo "Aborting interactive setup."
-            exit 0
+          if (( from_menu )); then
+            echo "Returning to main menu."
+            return 1
           fi
+          step=$((step - 1))
         else
           step=3
         fi
         ;;
       3)
         if ! choose_resolution_profile; then
+          if (( from_menu )); then
+            echo "Returning to main menu."
+            return 1
+          fi
           step=$((step - 1))
         else
           step=4
@@ -1997,6 +1997,10 @@ interactive_new_config() {
         ;;
       4)
         if ! choose_gamescope_rate; then
+          if (( from_menu )); then
+            echo "Returning to main menu."
+            return 1
+          fi
           step=$((step - 1))
         else
           step=5
@@ -2004,6 +2008,10 @@ interactive_new_config() {
         ;;
       5)
         if ! choose_vrr_hdr_and_steamos; then
+          if (( from_menu )); then
+            echo "Returning to main menu."
+            return 1
+          fi
           step=$((step - 1))
         else
           step=6
@@ -2011,6 +2019,10 @@ interactive_new_config() {
         ;;
       6)
         if ! choose_pipewire_debug; then
+          if (( from_menu )); then
+            echo "Returning to main menu."
+            return 1
+          fi
           step=$((step - 1))
         else
           step=7
@@ -2018,6 +2030,10 @@ interactive_new_config() {
         ;;
       7)
         if ! choose_ld_preload_mode; then
+          if (( from_menu )); then
+            echo "Returning to main menu."
+            return 1
+          fi
           step=$((step - 1))
         else
           step=8
@@ -2025,6 +2041,10 @@ interactive_new_config() {
         ;;
       8)
         if ! choose_audio_switch; then
+          if (( from_menu )); then
+            echo "Returning to main menu."
+            return 1
+          fi
           step=$((step - 1))
         else
           step=9
@@ -2032,6 +2052,10 @@ interactive_new_config() {
         ;;
       9)
         if ! choose_pre_post_commands; then
+          if (( from_menu )); then
+            echo "Returning to main menu."
+            return 1
+          fi
           step=$((step - 1))
         else
           step=10
@@ -2203,9 +2227,10 @@ interactive_profile_menu() {
             run_from_current_config
           fi
         else
-          echo "No other profiles available."
+          echo "No other profiles available or selection cancelled."
         fi
-        return 0
+        # Always return to the menu after this path (matches delete behavior)
+        continue
         ;;
       3)
         if ! interactive_new_config 1; then
