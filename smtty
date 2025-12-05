@@ -1959,6 +1959,10 @@ interactive_new_config() {
   POST_CMD=""
   detect_session_mode
 
+  # Reset refresh-related fields so new profile does NOT inherit previous rates.
+  G_FPS=0
+  G_FPS_BG=0
+
   local step=1
   while :; do
     case "$step" in
