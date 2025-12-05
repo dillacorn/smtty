@@ -91,6 +91,7 @@ CONFIG_FILE="$CONFIG_DIR/config"          # Legacy single-config location
 PROFILES_DIR="$CONFIG_DIR/profiles"       # Directory for named profiles
 LAST_PROFILE_FILE="$CONFIG_DIR/last_profile"
 AUDIO_STATE_FILE="$CONFIG_DIR/audio_state"
+SESSION_STATE_FILE="$CONFIG_DIR/session_state"
 
 CURRENT_PROFILE=""
 
@@ -132,7 +133,8 @@ AUDIO_SINK_NAME=""       # sink name to use when AUDIO_SWITCH_ENABLED=1
 
 # Optional hooks tied to the profile:
 #   PRE_CMD  runs asynchronously before gamescope starts.
-#   POST_CMD runs only when smtty tears down with "smtty -k".
+#   POST_CMD runs when the gamescope session ends (natural exit, crash, or kill),
+#            and also when you explicitly run "smtty -k".
 PRE_CMD=""
 POST_CMD=""
 
@@ -266,8 +268,10 @@ Options:
   -D <name> Delete specified configuration profile.
   -p        Print saved config summary and exit.
   -k        Kill any running gamescope processes and exit.
-            If the active profile defines a POST_CMD, it is run after audio restore.
+            If the active session profile defines a POST_CMD, it is run after audio restore.
   -d        Detach: start gamescope/Steam in the background and return immediately.
+            In detach mode, automatic POST_CMD on gamescope exit is not guaranteed.
+            Use 'smtty -k' to ensure POST_CMD runs.
   -S        Kill any running Steam client before launching gamescope (no prompt).
   -O        Interactively generate ready-to-paste Steam per-game launch options and exit.
 
@@ -289,7 +293,8 @@ Config:
       Steam type, optional audio sink switching, and optional pre/post commands.
 
       PRE_CMD  runs asynchronously before gamescope starts.
-      POST_CMD runs only when the session is torn down via "smtty -k".
+      POST_CMD runs when the gamescope session ends (natural exit, crash, or kill),
+               and also when you explicitly run 'smtty -k'.
 
   $LAST_PROFILE_FILE
       Tracks the last used profile name for -l flag.
@@ -653,7 +658,7 @@ print_config_summary() {
     echo "  Audio sink description:   ${sink_desc:-"(unresolved)"}"
   fi
   echo "  Pre-command (async):      $pre_display"
-  echo "  Post-command (smtty -k):  $post_display"
+  echo "  Post-command (on exit):   $post_display"
 }
 
 save_config() {
@@ -785,13 +790,71 @@ detect_session_mode() {
   fi
 }
 
+# ---------------- session state for reliable POST ----------------
+
+write_session_state() {
+  local pid=$1
+  mkdir -p "$CONFIG_DIR"
+  cat >"$SESSION_STATE_FILE" <<EOF
+SESSION_PID=$pid
+SESSION_PROFILE=$CURRENT_PROFILE
+POST_RAN=0
+EOF
+}
+
+read_session_state() {
+  if [[ ! -f "$SESSION_STATE_FILE" ]]; then
+    return 1
+  fi
+  if [[ ! -r "$SESSION_STATE_FILE" ]] || [[ ! -s "$SESSION_STATE_FILE" ]]; then
+    rm -f "$SESSION_STATE_FILE" 2>/dev/null || true
+    return 1
+  fi
+  # shellcheck source=/dev/null
+  . "$SESSION_STATE_FILE"
+  return 0
+}
+
+mark_post_ran_for_pid() {
+  local pid=$1
+  mkdir -p "$CONFIG_DIR"
+  cat >"$SESSION_STATE_FILE" <<EOF
+SESSION_PID=$pid
+SESSION_PROFILE=$CURRENT_PROFILE
+POST_RAN=1
+EOF
+}
+
+post_already_ran_for_pid() {
+  local pid=$1
+  if ! read_session_state; then
+    return 1
+  fi
+  local spid="${SESSION_PID:-0}"
+  local pran="${POST_RAN:-0}"
+  if [[ "$spid" =~ ^[0-9]+$ ]] && (( spid == pid )) && [[ "$pran" == "1" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+clear_session_state_if_pid_matches() {
+  local pid=$1
+  if ! read_session_state; then
+    return 0
+  fi
+  local spid="${SESSION_PID:-0}"
+  if [[ "$spid" =~ ^[0-9]+$ ]] && (( spid == pid )); then
+    rm -f "$SESSION_STATE_FILE" 2>/dev/null || true
+  fi
+}
+
 # ---------------- output / resolution selection ----------------
 
 detect_max_refresh_for_current_output() {
   # Best-effort detection of the highest refresh rate at the native
   # resolution for the currently selected DRM connector ($DRM_SHORT).
   # Requires: DRM_SHORT, NATIVE_W, NATIVE_H; uses `modetest -c` if present.
-
   if [[ -z "${DRM_SHORT:-}" ]]; then
     return 1
   fi
@@ -1382,7 +1445,7 @@ choose_audio_switch() {
 choose_pre_post_commands() {
   echo "Optional pre / post shell commands for this profile:"
   echo "  Pre-command runs asynchronously before gamescope starts."
-  echo "  Post-command runs only when you tear down the session via 'smtty -k'."
+  echo "  Post-command runs when the gamescope session ends."
   echo "  Leave empty to skip."
   echo
 
@@ -1394,7 +1457,7 @@ choose_pre_post_commands() {
   PRE_CMD="$pre"
 
   local post
-  post=$(read_default "Post-command for smtty -k (empty = none)" "${POST_CMD:-}")
+  post=$(read_default "Post-command (empty = none)" "${POST_CMD:-}")
   if [[ "$post" == "$BACK_SENTINEL" ]]; then
     return 1
   fi
@@ -1531,11 +1594,27 @@ run_pre_hook() {
 
 run_post_hook() {
   if [[ -n "${POST_CMD:-}" ]]; then
-    print_info "Running post-command (smtty -k)..."
+    print_info "Running post-command..."
     if ! sh -c "$POST_CMD"; then
       print_warn "Post-command failed."
     fi
   fi
+}
+
+on_gamescope_exit() {
+  local pid=$1
+
+  audio_restore_from_state
+
+  if post_already_ran_for_pid "$pid"; then
+    clear_session_state_if_pid_matches "$pid"
+    return 0
+  fi
+
+  run_post_hook
+  mark_post_ran_for_pid "$pid"
+  clear_session_state_if_pid_matches "$pid"
+  return 0
 }
 
 print_steam_launch_options() {
@@ -1859,6 +1938,8 @@ launch_vanilla_gamescope() {
     args+=(--adaptive-sync)
   fi
 
+  # If HDR is enabled and we are running under a Wayland session,
+  # set Proton HDR env vars so Proton-based games can see HDR.
   if (( ENABLE_GAMESCOPE_HDR == 1 )); then
     args+=(--hdr-enabled --hdr-itm-enable --hdr-itm-target-nits "$GAMESCOPE_HDR_NITS")
   fi
@@ -1899,16 +1980,28 @@ launch_vanilla_gamescope() {
     fi
     local gspid=$!
     audio_switch_start_for_pid "$gspid"
+    write_session_state "$gspid"
     print_success "gamescope started in detached mode with PID $gspid."
     echo "Use 'smtty -k' to kill any running gamescope processes."
     exit 0
   else
-    audio_switch_start_for_pid "$$"
-    exec gamescope "${args[@]}" -- "${inner_cmd[@]}"
+    gamescope "${args[@]}" -- "${inner_cmd[@]}" &
+    local gspid=$!
+    write_session_state "$gspid"
+    audio_switch_start_for_pid "$gspid"
+
+    local gs_status=0
+    if ! wait "$gspid"; then
+      gs_status=$?
+    fi
+
+    on_gamescope_exit "$gspid"
+    exit "$gs_status"
   fi
 }
 
 launch_gamescope_session() {
+  # $1 == 1 means this came from the main menu and "b" should return there.
   configure_steam_command
   check_deps
 
@@ -1951,7 +2044,6 @@ launch_gamescope_session() {
 }
 
 interactive_new_config() {
-  # $1 == 1 means this came from the main menu and "b" should return there.
   local from_menu=${1:-0}
 
   CURRENT_PROFILE=""
@@ -2067,13 +2159,11 @@ interactive_new_config() {
         ;;
       10)
         if ! save_config; then
-          # back from profile naming goes to previous step
           step=$((step - 1))
           continue
         fi
         handle_running_steam_before_launch
         launch_gamescope_session
-        return 0
         ;;
       *)
         return 0
@@ -2185,6 +2275,18 @@ generate_launch_opts() {
 
 kill_gamescope() {
   local had_gs=0
+  local state_profile=""
+  local state_pid=0
+
+  if read_session_state; then
+    state_profile="${SESSION_PROFILE:-}"
+    state_pid="${SESSION_PID:-0}"
+  fi
+
+  if [[ -n "$state_profile" ]]; then
+    load_profile_by_name "$state_profile" >/dev/null 2>&1 || true
+  fi
+
   if pkill gamescope >/dev/null 2>&1; then
     had_gs=1
     print_success "Killed gamescope processes."
@@ -2195,7 +2297,14 @@ kill_gamescope() {
   audio_restore_from_state
 
   if (( had_gs )); then
-    run_post_hook
+    if [[ "$state_pid" =~ ^[0-9]+$ ]] && (( state_pid > 0 )); then
+      if ! post_already_ran_for_pid "$state_pid"; then
+        run_post_hook
+        mark_post_ran_for_pid "$state_pid"
+      fi
+    else
+      run_post_hook
+    fi
   fi
 
   return $had_gs
@@ -2223,7 +2332,6 @@ interactive_profile_menu() {
     case "$choice" in
       1)
         run_from_current_config
-        return 0
         ;;
       2)
         if select_profile_interactive "use"; then
@@ -2332,7 +2440,6 @@ if [[ -n "$SELECTED_PROFILE" && $FLAG_DELETE_PROFILE -eq 0 ]]; then
     exit 1
   fi
   run_from_current_config
-  exit 0
 fi
 
 if (( FLAG_LAST )); then
@@ -2341,8 +2448,10 @@ if (( FLAG_LAST )); then
     interactive_new_config 0
     exit 0
   fi
+  # At this point: no special flags, just plain `smtty`.
+  # If we don't have a valid last_profile loaded, but profiles exist,
+  # pick one and THEN go through the normal menu (do not auto-launch).
   run_from_current_config
-  exit 0
 fi
 
 if (( FLAG_NEW )); then
@@ -2350,9 +2459,6 @@ if (( FLAG_NEW )); then
   exit 0
 fi
 
-# At this point: no special flags, just plain `smtty`.
-# If we don't have a valid last_profile loaded, but profiles exist,
-# pick one and THEN go through the normal menu (do not auto-launch).
 if (( HAVE_CONFIG == 0 )); then
   if select_profile_interactive "use"; then
     load_profile_by_name "$CURRENT_PROFILE" || true
