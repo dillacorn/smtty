@@ -609,6 +609,9 @@ audio_sink_display_name() {
 }
 
 print_config_summary() {
+  # Resolve auto-refresh (G_FPS==0) to detected max if possible.
+  init_default_refresh_for_output
+
   if (( HAVE_CONFIG == 0 )); then
     echo "No saved config loaded"
     return
@@ -783,6 +786,125 @@ detect_session_mode() {
 }
 
 # ---------------- output / resolution selection ----------------
+
+detect_max_refresh_for_current_output() {
+  # Best-effort detection of the highest refresh rate at the native
+  # resolution for the currently selected DRM connector ($DRM_SHORT).
+  # Requires: DRM_SHORT, NATIVE_W, NATIVE_H; uses `modetest -c` if present.
+
+  if [[ -z "${DRM_SHORT:-}" ]]; then
+    return 1
+  fi
+  if (( NATIVE_W <= 0 || NATIVE_H <= 0 )); then
+    return 1
+  fi
+  if ! command -v modetest >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local native
+  native="${NATIVE_W}x${NATIVE_H}"
+
+  modetest -c 2>/dev/null | awk -v out="$DRM_SHORT" -v native="$native" '
+    BEGIN {
+      connectors = 0;
+      found = 0;
+      in_modes = 0;
+      max = 0;
+    }
+
+    $1 == "Connectors:" {
+      connectors = 1;
+      next;
+    }
+
+    !connectors {
+      next;
+    }
+
+    # Connector line: id encoder status name size(mm) modes encoders
+    $1 ~ /^[0-9]+$/ && $4 == out {
+      found = 1;
+      in_modes = 0;
+      next;
+    }
+
+    found && $1 == "modes:" {
+      in_modes = 1;
+      next;
+    }
+
+    # End of this connectors mode list
+    found && in_modes && ($1 == "props:" || $1 == "encoders:" || $1 == "CRTCs:" || $1 == "id") {
+      in_modes = 0;
+      found = 0;
+      next;
+    }
+
+    found && in_modes {
+      mode = "";
+      hz = 0;
+
+      # Formats:
+      #   "#0 1920x1080 60.00 ..."   (indexed)
+      #   "1920x1080 60.00 ..."      (no index)
+      if ($1 ~ /^#?[0-9]+$/ && $2 ~ /^[0-9]+x[0-9]+$/) {
+        mode = $2;
+        hz = $3;
+      } else if ($1 ~ /^[0-9]+x[0-9]+$/) {
+        mode = $1;
+        hz = $2;
+      } else {
+        next;
+      }
+
+      # Only consider native resolution for this output
+      if (native != "" && mode != native) {
+        next;
+      }
+
+      # Strip trailing .00 etc
+      gsub(/\.[0-9]+$/, "", hz);
+
+      if (hz + 0 > max) {
+        max = hz + 0;
+      }
+    }
+
+    END {
+      if (max > 0) {
+        printf "%d\n", max;
+      }
+    }
+  '
+}
+
+init_default_refresh_for_output() {
+  # Only auto-set if we don't already have a specific refresh saved.
+  # G_FPS == 0 is treated as "auto" / "not set yet".
+  if (( G_FPS != 0 )); then
+    return 0
+  fi
+  if [[ -z "${DRM_SHORT:-}" ]]; then
+    return 0
+  fi
+  if (( NATIVE_W <= 0 || NATIVE_H <= 0 )); then
+    return 0
+  fi
+  if ! command -v modetest >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local detected=""
+  detected=$(detect_max_refresh_for_current_output 2>/dev/null || true)
+
+  if [[ "$detected" =~ ^[0-9]+$ ]] && (( detected > 0 )); then
+    G_FPS=$detected
+    print_info "Auto-detected max refresh for $DRM_SHORT at ${NATIVE_W}x${NATIVE_H}: ${G_FPS} Hz"
+    echo
+  fi
+}
+
 choose_drm_output() {
   echo "Detected *connected* outputs:"
   echo
@@ -867,6 +989,11 @@ choose_drm_output() {
     echo "      but gamescope still controls internal and outer resolutions/scaling."
     echo
   fi
+
+  # Auto-initialize default refresh to the highest supported rate
+  # for this connector at its native resolution, if G_FPS is still 0.
+  init_default_refresh_for_output
+
   return 0
 }
 
@@ -1969,6 +2096,9 @@ run_from_current_config() {
     fi
   fi
 
+  # For existing profiles with G_FPS=0, detect and apply max refresh.
+  init_default_refresh_for_output
+
   handle_running_steam_before_launch
   launch_gamescope_session
 }
@@ -2018,6 +2148,9 @@ generate_launch_opts() {
     HAVE_CONFIG=1
   fi
 
+  # If this profile still has G_FPS=0, resolve it to a detected max.
+  init_default_refresh_for_output
+
   print_steam_launch_options
   exit 0
 }
@@ -2043,6 +2176,8 @@ kill_gamescope() {
 interactive_profile_menu() {
   while :; do
     detect_session_mode
+    # Ensure any G_FPS=0 auto-refresh is resolved before showing summary.
+    init_default_refresh_for_output
     print_config_summary
     echo
     echo "Options:"
