@@ -95,6 +95,9 @@ SESSION_STATE_FILE="$CONFIG_DIR/session_state"
 
 CURRENT_PROFILE=""
 
+# Auto NVIDIA Flatpak GBM handling (runtime-only)
+AUTO_GBM_BACKENDS_PATH=""
+
 # ---------------- state ----------------
 DRM_SHORT=""
 DRM_NATIVE_MODE=""
@@ -416,7 +419,6 @@ delete_profile() {
 
   local ans
   if ! backable_read ans "Delete profile '$profile_name'? [y/N, b = back]: "; then
-    # back
     echo "Cancelled."
     return 1
   fi
@@ -491,7 +493,6 @@ prompt_profile_name() {
     if [[ -f "$profile_path" ]]; then
       local ans
       if ! backable_read ans "Profile '$profile_name' already exists. Overwrite? [y/N, b = back]: "; then
-        # back from overwrite -> re-prompt name
         continue
       fi
       case "$ans" in
@@ -659,6 +660,10 @@ print_config_summary() {
   fi
   echo "  Pre-command (async):      $pre_display"
   echo "  Post-command (on exit):   $post_display"
+
+  if [[ -n "${AUTO_GBM_BACKENDS_PATH:-}" ]]; then
+    echo "  NVIDIA Flatpak GBM path:  $AUTO_GBM_BACKENDS_PATH (auto)"
+  fi
 }
 
 save_config() {
@@ -788,6 +793,71 @@ detect_session_mode() {
   else
     SESSION_MODE="kms"
   fi
+}
+
+# ---------------- NVIDIA + Flatpak GBM autodetect ----------------
+
+have_nvidia_gpu() {
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -r /proc/driver/nvidia/version ]]; then
+    if grep -qi nvidia /proc/driver/nvidia/version; then
+      return 0
+    fi
+  fi
+  if command -v lspci >/dev/null 2>&1; then
+    if lspci 2>/dev/null | grep -Ei 'vga|3d|display' | grep -qi nvidia; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+flatpak_nvidia_gl_dir_name() {
+  local appid="com.valvesoftware.Steam"
+
+  if ! command -v flatpak >/dev/null 2>&1; then
+    return 1
+  fi
+
+  if ! flatpak list --app 2>/dev/null | grep -q "$appid"; then
+    return 1
+  fi
+
+  flatpak run --command=sh "$appid" -c \
+    'ls -1 /usr/lib/x86_64-linux-gnu/GL 2>/dev/null | grep -E "^nvidia-" | head -n 1' \
+    2>/dev/null
+}
+
+resolve_flatpak_nvidia_gbm_backends_path() {
+  local d
+  d="$(flatpak_nvidia_gl_dir_name || true)"
+  [[ -n "$d" ]] || return 1
+  printf '/usr/lib/x86_64-linux-gnu/GL/%s/extra/gbm' "$d"
+  return 0
+}
+
+maybe_set_flatpak_nvidia_gbm_env() {
+  if [[ "${STEAM_TYPE:-}" != "flatpak" ]]; then
+    return 0
+  fi
+  if ! have_nvidia_gpu; then
+    return 0
+  fi
+
+  if [[ -n "${GBM_BACKENDS_PATH-}" ]]; then
+    AUTO_GBM_BACKENDS_PATH="$GBM_BACKENDS_PATH"
+    return 0
+  fi
+
+  local p
+  p="$(resolve_flatpak_nvidia_gbm_backends_path || true)"
+  if [[ -n "$p" ]]; then
+    export GBM_BACKENDS_PATH="$p"
+    AUTO_GBM_BACKENDS_PATH="$p"
+  fi
+  return 0
 }
 
 # ---------------- session state for reliable POST ----------------
@@ -1732,6 +1802,14 @@ print_steam_launch_options() {
     env_prefix+='LD_PRELOAD="" '
   fi
 
+  if (( use_flatpak_prefix )) && have_nvidia_gpu; then
+    local _p
+    _p="$(resolve_flatpak_nvidia_gbm_backends_path || true)"
+    if [[ -n "$_p" ]]; then
+      env_prefix+="GBM_BACKENDS_PATH=$_p "
+    fi
+  fi
+
   # HDR + Wayland session -> add Proton HDR envs to the launch options
   # This is Proton-side, not gamescope-side.
   if (( ENABLE_GAMESCOPE_HDR == 1 )) && [[ -n "${WAYLAND_DISPLAY-}" ]]; then
@@ -1955,6 +2033,8 @@ launch_vanilla_gamescope() {
   printf ' %q' "${inner_cmd[@]}"
   printf '\n\n'
 
+  maybe_set_flatpak_nvidia_gbm_env
+
   run_pre_hook
 
   if [[ "${PIPEWIRE_DEBUG_MODE:-2}" != "inherit" ]]; then
@@ -2035,6 +2115,9 @@ launch_gamescope_session() {
     sink_desc=$(audio_sink_display_name "$AUDIO_SINK_NAME")
     echo "  Audio sink name:       ${AUDIO_SINK_NAME:-"(unset)"}"
     echo "  Audio sink desc:       ${sink_desc:-"(unresolved)"}"
+  fi
+  if [[ -n "${AUTO_GBM_BACKENDS_PATH:-}" ]]; then
+    echo "  NVIDIA Flatpak GBM:    ${AUTO_GBM_BACKENDS_PATH} (auto)"
   fi
   echo "  Inner payload:         $inner_label"
   echo "  Detach mode:           ${FLAG_DETACH}"
@@ -2214,7 +2297,6 @@ run_from_current_config() {
     fi
   fi
 
-  # For existing profiles with G_FPS=0, detect and apply max refresh.
   init_default_refresh_for_output
 
   handle_running_steam_before_launch
@@ -2266,7 +2348,6 @@ generate_launch_opts() {
     HAVE_CONFIG=1
   fi
 
-  # If this profile still has G_FPS=0, resolve it to a detected max.
   init_default_refresh_for_output
 
   print_steam_launch_options
@@ -2313,7 +2394,6 @@ kill_gamescope() {
 interactive_profile_menu() {
   while :; do
     detect_session_mode
-    # Ensure any G_FPS=0 auto-refresh is resolved before showing summary.
     init_default_refresh_for_output
     print_config_summary
     echo
