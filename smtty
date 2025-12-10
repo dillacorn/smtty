@@ -160,12 +160,121 @@ SELECTED_PROFILE=""   # -c <profile>: use specific profile
 # back navigation
 BACK_SENTINEL="__SMTTY_BACK__"
 
-# ---------------- helpers ----------------
-require_cmd() {
-  local cmd=$1
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    MISSING_CMDS+=("$cmd")
-  fi
+# ---------------- gamescope desktop-mode kill hack ----------------
+# Marker + fallback heuristics without breaking TTY behavior.
+#
+# Problem:
+#   Capturing gamescope output with pipes/process substitution can change
+#   whether Steam/gamescope prints the DBus desktop-switch error.
+#
+# Solution:
+#   Prefer logging via `script` (pty) when available so gamescope still
+#   believes it's writing to a terminal. Then tail the log for markers.
+#   If `script` is missing, fall back to non-parsing heuristics.
+
+line_matches_desktop_switch_marker() {
+  local line=$1
+  case "$line" in
+    *"The name is not activatable"*) return 0 ;;
+    *"org.freedesktop.DBus.Error.ServiceUnknown"*) return 0 ;;
+  esac
+  return 1
+}
+
+start_desktop_switch_watcher() {
+  # start_desktop_switch_watcher <log_file> <gamescope_pid>
+  # Echoes watcher PID, or 0 if not started.
+  local log_file=$1
+  local gs_pid=${2:-0}
+
+  [[ -n "$log_file" ]] || { echo 0; return 0; }
+  command -v tail >/dev/null 2>&1 || { echo 0; return 0; }
+
+  (
+    set +e
+    tail -n 0 -F "$log_file" 2>/dev/null | while IFS= read -r line; do
+      if line_matches_desktop_switch_marker "$line"; then
+        print_warn "Detected Desktop Mode marker; killing gamescope."
+        kill_gamescope || true
+        break
+      fi
+
+      if [[ "$gs_pid" =~ ^[0-9]+$ ]] && (( gs_pid > 0 )); then
+        if ! kill -0 "$gs_pid" 2>/dev/null; then
+          break
+        fi
+      fi
+    done
+  ) &
+
+  echo $!
+}
+
+start_steam_child_exit_watcher() {
+  # start_steam_child_exit_watcher <gamescope_pid>
+  # If Steam payload seems to exit while gamescope is alive, kill gamescope.
+  # Echoes watcher PID, or 0 if not started.
+  local gs_pid=${1:-0}
+
+  [[ "$gs_pid" =~ ^[0-9]+$ ]] || { echo 0; return 0; }
+  (( gs_pid > 0 )) || { echo 0; return 0; }
+  command -v pgrep >/dev/null 2>&1 || { echo 0; return 0; }
+
+  (
+    set +e
+    sleep 5
+
+    while kill -0 "$gs_pid" 2>/dev/null; do
+      if ! pgrep -P "$gs_pid" -f -i '(steam|steamwebhelper|com\.valvesoftware\.Steam|flatpak)' \
+           >/dev/null 2>&1; then
+        sleep 2
+        if kill -0 "$gs_pid" 2>/dev/null && \
+           ! pgrep -P "$gs_pid" -f -i '(steam|steamwebhelper|com\.valvesoftware\.Steam|flatpak)' \
+             >/dev/null 2>&1; then
+          print_warn "Steam payload appears to have exited; killing gamescope."
+          kill_gamescope || true
+          break
+        fi
+      fi
+      sleep 1
+    done
+  ) &
+
+  echo $!
+}
+
+start_desktop_steam_spawn_watcher() {
+  # start_desktop_steam_spawn_watcher <gamescope_pid>
+  # If a non-gamepadui Steam appears while gamescope is alive, assume
+  # desktop switch attempt and kill gamescope.
+  # Echoes watcher PID, or 0 if not started.
+  local gs_pid=${1:-0}
+
+  [[ "$gs_pid" =~ ^[0-9]+$ ]] || { echo 0; return 0; }
+  (( gs_pid > 0 )) || { echo 0; return 0; }
+  command -v ps >/dev/null 2>&1 || { echo 0; return 0; }
+
+  (
+    set +e
+    sleep 5
+
+    while kill -0 "$gs_pid" 2>/dev/null; do
+      if ps -eo pid=,ppid=,args= 2>/dev/null | awk -v gpid="$gs_pid" '
+        BEGIN { found=0 }
+        /steam/ && !/-gamepadui/ && !/steamwebhelper/ {
+          if ($2 != gpid) { found=1 }
+        }
+        END { exit(found ? 0 : 1) }
+      '; then
+        print_warn "Detected host Steam desktop-mode spawn attempt; killing gamescope."
+        kill_gamescope || true
+        break
+      fi
+      sleep 1
+    done
+  ) &
+
+  echo $!
 }
 
 backable_read() {
@@ -1901,6 +2010,13 @@ configure_steam_command() {
   fi
 }
 
+require_cmd() {
+  local cmd=$1
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    MISSING_CMDS+=("$cmd")
+  fi
+}
+
 # ---------------- gamescope deps ----------------
 check_deps() {
   MISSING_CMDS=()
@@ -1988,6 +2104,8 @@ handle_running_steam_before_launch() {
   esac
 }
 
+# ---------------- launch ----------------
+
 launch_vanilla_gamescope() {
   local inner_cmd=("$@")
 
@@ -2016,8 +2134,6 @@ launch_vanilla_gamescope() {
     args+=(--adaptive-sync)
   fi
 
-  # If HDR is enabled and we are running under a Wayland session,
-  # set Proton HDR env vars so Proton-based games can see HDR.
   if (( ENABLE_GAMESCOPE_HDR == 1 )); then
     args+=(--hdr-enabled --hdr-itm-enable --hdr-itm-target-nits "$GAMESCOPE_HDR_NITS")
   fi
@@ -2045,8 +2161,6 @@ launch_vanilla_gamescope() {
     export LD_PRELOAD=""
   fi
 
-  # If HDR is enabled and we are running under a Wayland session,
-  # set Proton HDR env vars so Proton-based games can see HDR.
   if (( ENABLE_GAMESCOPE_HDR == 1 )) && [[ -n "${WAYLAND_DISPLAY-}" ]]; then
     export PROTON_ENABLE_WAYLAND=1
     export PROTON_ENABLE_HDR=1
@@ -2064,20 +2178,96 @@ launch_vanilla_gamescope() {
     print_success "gamescope started in detached mode with PID $gspid."
     echo "Use 'smtty -k' to kill any running gamescope processes."
     exit 0
-  else
-    gamescope "${args[@]}" -- "${inner_cmd[@]}" &
-    local gspid=$!
-    write_session_state "$gspid"
-    audio_switch_start_for_pid "$gspid"
-
-    local gs_status=0
-    if ! wait "$gspid"; then
-      gs_status=$?
-    fi
-
-    on_gamescope_exit "$gspid"
-    exit "$gs_status"
   fi
+
+  mkdir -p "$CONFIG_DIR"
+  local gs_log="$CONFIG_DIR/gamescope-session.$$.log"
+  local gs_pid_file="$CONFIG_DIR/gamescope-session.$$.pid"
+  : > "$gs_log"
+  : > "$gs_pid_file"
+
+  local gspid=0
+  local marker_watch_pid=0
+  local steam_child_watch_pid=0
+  local desktop_spawn_watch_pid=0
+  local wrapper_pid=0
+
+  if command -v script >/dev/null 2>&1; then
+    # Build a fully-quoted gamescope command string.
+    local cmd_str="gamescope"
+    local a
+    for a in "${args[@]}"; do
+      cmd_str+=" $(printf '%q' "$a")"
+    done
+    cmd_str+=" --"
+    for a in "${inner_cmd[@]}"; do
+      cmd_str+=" $(printf '%q' "$a")"
+    done
+
+    local pid_file_q
+    pid_file_q=$(printf '%q' "$gs_pid_file")
+
+    # Run gamescope inside a bash wrapper that records the real PID then waits.
+    local wrapper_cmd
+    wrapper_cmd="bash -lc 'set -e; ${cmd_str} & echo \$! > ${pid_file_q}; wait \$!'"
+
+    script -q -f -c "$wrapper_cmd" "$gs_log" &
+    wrapper_pid=$!
+
+    # Read the real gamescope PID from the pidfile.
+    local i
+    for ((i=0; i<100; i++)); do
+      if [[ -s "$gs_pid_file" ]]; then
+        read -r gspid <"$gs_pid_file" || true
+        break
+      fi
+      sleep 0.05
+    done
+
+    # Fallback if pidfile failed.
+    if [[ ! "$gspid" =~ ^[0-9]+$ ]] || (( gspid <= 0 )); then
+      gspid=$(pgrep -n -u "$UID" -x gamescope 2>/dev/null || true)
+    fi
+  else
+    # No script available, preserve TTY behavior by not piping output.
+    gamescope "${args[@]}" -- "${inner_cmd[@]}" &
+    gspid=$!
+  fi
+
+  if [[ ! "$gspid" =~ ^[0-9]+$ ]] || (( gspid <= 0 )); then
+    print_warn "Could not reliably determine gamescope PID; desktop-switch auto-kill may be unreliable."
+    # As a last resort, track the wrapper if we have one.
+    if [[ "$wrapper_pid" =~ ^[0-9]+$ ]] && (( wrapper_pid > 0 )); then
+      gspid=$wrapper_pid
+    fi
+  fi
+
+  write_session_state "$gspid"
+  audio_switch_start_for_pid "$gspid"
+
+  marker_watch_pid=$(start_desktop_switch_watcher "$gs_log" "$gspid" || echo 0)
+  steam_child_watch_pid=$(start_steam_child_exit_watcher "$gspid" || echo 0)
+  desktop_spawn_watch_pid=$(start_desktop_steam_spawn_watcher "$gspid" || echo 0)
+
+  local gs_status=0
+  if ! wait "$gspid"; then
+    gs_status=$?
+  fi
+
+  if [[ "$marker_watch_pid" =~ ^[0-9]+$ ]] && (( marker_watch_pid > 0 )); then
+    kill "$marker_watch_pid" 2>/dev/null || true
+  fi
+  if [[ "$steam_child_watch_pid" =~ ^[0-9]+$ ]] && (( steam_child_watch_pid > 0 )); then
+    kill "$steam_child_watch_pid" 2>/dev/null || true
+  fi
+  if [[ "$desktop_spawn_watch_pid" =~ ^[0-9]+$ ]] && (( desktop_spawn_watch_pid > 0 )); then
+    kill "$desktop_spawn_watch_pid" 2>/dev/null || true
+  fi
+
+  rm -f "$gs_log" "$gs_pid_file" 2>/dev/null || true
+
+  on_gamescope_exit "$gspid"
+  exit "$gs_status"
 }
 
 launch_gamescope_session() {
