@@ -2060,27 +2060,264 @@ require_cmd() {
   fi
 }
 
+# ---------------- distro-aware dependency guidance ----------------
+PKG_MGR="unknown"
+
+is_ostree_system() {
+  [[ -e /run/ostree-booted ]] || command -v rpm-ostree >/dev/null 2>&1
+}
+
+detect_pkg_manager() {
+  if is_ostree_system; then
+    PKG_MGR="rpm-ostree"
+  elif command -v apt-get >/dev/null 2>&1; then
+    PKG_MGR="apt"
+  elif command -v dnf >/dev/null 2>&1; then
+    PKG_MGR="dnf"
+  elif command -v pacman >/dev/null 2>&1; then
+    PKG_MGR="pacman"
+  elif command -v zypper >/dev/null 2>&1; then
+    PKG_MGR="zypper"
+  else
+    PKG_MGR="unknown"
+  fi
+}
+
+pkg_for_cmd() {
+  local cmd=$1
+
+  case "$PKG_MGR" in
+    apt)
+      case "$cmd" in
+        gamescope) echo "gamescope" ;;
+        steam)     echo "steam" ;;
+        flatpak)   echo "flatpak" ;;
+        pgrep|pkill|ps) echo "procps" ;;
+        awk)       echo "gawk" ;;
+        grep)      echo "grep" ;;
+        find)      echo "findutils" ;;
+        sort|tail|head|tr|cat) echo "coreutils" ;;
+        script|setsid) echo "util-linux" ;;
+        pactl)     echo "pulseaudio-utils" ;;
+        modetest)  echo "libdrm-tests" ;;
+        *)         echo "" ;;
+      esac
+      ;;
+    dnf|rpm-ostree)
+      case "$cmd" in
+        gamescope) echo "gamescope" ;;
+        steam)     echo "steam" ;;
+        flatpak)   echo "flatpak" ;;
+        pgrep|pkill|ps) echo "procps-ng" ;;
+        awk)       echo "gawk" ;;
+        grep)      echo "grep" ;;
+        find)      echo "findutils" ;;
+        sort|tail|head|tr|cat) echo "coreutils" ;;
+        script|setsid) echo "util-linux" ;;
+        pactl)     echo "pulseaudio-utils" ;;
+        modetest)  echo "drm-utils" ;;
+        *)         echo "" ;;
+      esac
+      ;;
+    pacman)
+      case "$cmd" in
+        gamescope) echo "gamescope" ;;
+        steam)     echo "steam" ;;
+        flatpak)   echo "flatpak" ;;
+        pgrep|pkill|ps) echo "procps-ng" ;;
+        awk)       echo "gawk" ;;
+        grep)      echo "grep" ;;
+        find)      echo "findutils" ;;
+        sort|tail|head|tr|cat) echo "coreutils" ;;
+        script|setsid) echo "util-linux" ;;
+        pactl)     echo "libpulse" ;;
+        modetest)  echo "libdrm" ;;
+        *)         echo "" ;;
+      esac
+      ;;
+    zypper)
+      case "$cmd" in
+        gamescope) echo "gamescope" ;;
+        steam)     echo "steam" ;;
+        flatpak)   echo "flatpak" ;;
+        pgrep|pkill|ps) echo "procps" ;;
+        awk)       echo "gawk" ;;
+        grep)      echo "grep" ;;
+        find)      echo "findutils" ;;
+        sort|tail|head|tr|cat) echo "coreutils" ;;
+        script|setsid) echo "util-linux" ;;
+        pactl)     echo "pulseaudio-utils" ;;
+        modetest)  echo "libdrm-tools" ;;
+        *)         echo "" ;;
+      esac
+      ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
+flatpak_steam_installed() {
+  command -v flatpak >/dev/null 2>&1 || return 1
+  flatpak list --app 2>/dev/null | grep -q "com.valvesoftware.Steam"
+}
+
+build_one_install_command() {
+  # Usage: build_one_install_command <need_flatpak_steam_app 0/1> <missing_cmd_1> ...
+  local need_flatpak_steam_app=${1:-0}
+  shift || true
+
+  detect_pkg_manager
+
+  local -A seen=()
+  local -a pkgs=()
+  local cmd pkg
+
+  for cmd in "$@"; do
+    pkg="$(pkg_for_cmd "$cmd")"
+    [[ -n "$pkg" ]] || continue
+    [[ -n "${seen[$pkg]-}" ]] && continue
+    seen["$pkg"]=1
+    pkgs+=("$pkg")
+  done
+
+  local host_install=""
+  case "$PKG_MGR" in
+    apt)
+      if (( ${#pkgs[@]} > 0 )); then
+        host_install="sudo apt update && sudo apt install -y ${pkgs[*]}"
+      fi
+      ;;
+    dnf)
+      if (( ${#pkgs[@]} > 0 )); then
+        host_install="sudo dnf install -y ${pkgs[*]}"
+      fi
+      ;;
+    pacman)
+      if (( ${#pkgs[@]} > 0 )); then
+        host_install="sudo pacman -Syu --needed ${pkgs[*]}"
+      fi
+      ;;
+    zypper)
+      if (( ${#pkgs[@]} > 0 )); then
+        host_install="sudo zypper install -y ${pkgs[*]}"
+      fi
+      ;;
+    rpm-ostree)
+      if (( ${#pkgs[@]} > 0 )); then
+        host_install="sudo rpm-ostree install ${pkgs[*]} && systemctl reboot"
+      fi
+      ;;
+    *)
+      host_install=""
+      ;;
+  esac
+
+  local fp_install=""
+  if (( need_flatpak_steam_app )); then
+    fp_install="flatpak install -y flathub com.valvesoftware.Steam"
+  fi
+
+  if [[ "$PKG_MGR" == "rpm-ostree" ]]; then
+    if [[ -n "$fp_install" && -n "$host_install" ]]; then
+      printf '%s; %s\n' "$fp_install" "$host_install"
+    elif [[ -n "$fp_install" ]]; then
+      printf '%s\n' "$fp_install"
+    elif [[ -n "$host_install" ]]; then
+      printf '%s\n' "$host_install"
+    else
+      printf '%s\n' ""
+    fi
+    return 0
+  fi
+
+  if [[ -n "$fp_install" && -n "$host_install" ]]; then
+    printf '%s && %s\n' "$host_install" "$fp_install"
+  elif [[ -n "$host_install" ]]; then
+    printf '%s\n' "$host_install"
+  elif [[ -n "$fp_install" ]]; then
+    printf '%s\n' "$fp_install"
+  else
+    printf '%s\n' ""
+  fi
+}
+
 # ---------------- gamescope deps ----------------
 check_deps() {
   MISSING_CMDS=()
+
+  # Required shell/userland tools used throughout the script.
+  require_cmd awk
+  require_cmd grep
+  require_cmd find
+  require_cmd sort
+  require_cmd tail
+  require_cmd head
+  require_cmd tr
+  require_cmd cat
+
+  # Process tools used by the script (steam/gamescope control).
+  require_cmd pgrep
+  require_cmd pkill
+  require_cmd ps
+
+  # Hard required for launching.
   require_cmd gamescope
+
+  local need_flatpak_steam_app=0
 
   if [[ "$STEAM_TYPE" == "flatpak" ]]; then
     require_cmd flatpak
-    if ! flatpak list --app 2>/dev/null | grep -q "com.valvesoftware.Steam"; then
-      print_error "Steam Flatpak (com.valvesoftware.Steam) is not installed."
-      exit 1
+    if command -v flatpak >/dev/null 2>&1; then
+      if ! flatpak_steam_installed; then
+        need_flatpak_steam_app=1
+      fi
     fi
   else
     require_cmd steam
   fi
 
-  if ((${#MISSING_CMDS[@]} > 0)); then
-    print_error "Missing required commands:"
-    printf '  - %s\n' "${MISSING_CMDS[@]}"
+  # Soft deps (feature degradation only).
+  local -a SOFT_MISSING=()
+  command -v modetest >/dev/null 2>&1 || SOFT_MISSING+=("modetest")
+  command -v pactl    >/dev/null 2>&1 || SOFT_MISSING+=("pactl")
+  command -v script   >/dev/null 2>&1 || SOFT_MISSING+=("script")
+  command -v setsid   >/dev/null 2>&1 || SOFT_MISSING+=("setsid")
+
+  if ((${#MISSING_CMDS[@]} > 0)) || (( need_flatpak_steam_app )); then
+    print_error "Missing required dependencies:"
+    if ((${#MISSING_CMDS[@]} > 0)); then
+      printf '  - %s\n' "${MISSING_CMDS[@]}"
+    fi
+    if (( need_flatpak_steam_app )); then
+      printf '  - %s\n' "Steam Flatpak app (com.valvesoftware.Steam)"
+    fi
     echo
-    echo "Install the missing utilities with your package manager."
+
+    local cmdline
+    cmdline="$(build_one_install_command "$need_flatpak_steam_app" "${MISSING_CMDS[@]}")"
+
+    if [[ -n "$cmdline" ]]; then
+      print_info "Install command (single line):"
+      echo "  $cmdline"
+      echo
+      if is_ostree_system; then
+        print_warn "Immutable (rpm-ostree) systems may require a reboot after layering packages."
+        echo
+      fi
+    else
+      print_warn "Could not detect your package manager to generate an install command."
+      print_info "Install the missing tools with your distro's package manager, then re-run smtty."
+      echo
+    fi
+
     exit 1
+  fi
+
+  if ((${#SOFT_MISSING[@]} > 0)); then
+    print_warn "Optional tools missing (some features degrade):"
+    printf '  - %s\n' "${SOFT_MISSING[@]}"
+    echo
   fi
 }
 
