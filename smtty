@@ -108,7 +108,10 @@ GAME_W=0
 GAME_H=0
 STRETCH_FLAG="none"   # "none" | "stretch"
 
-G_FPS=0               # gamescope -r (target display refresh, Hz; 0 = unlimited)
+# Refresh semantics (futureproofed without changing current behavior):
+#   G_FPS == 0 means: auto-detect max refresh via modetest if available; otherwise unlimited (omit -r).
+#   If user wants a fixed refresh, set G_FPS > 0.
+G_FPS=0               # gamescope -r (target display refresh, Hz; 0 = auto/unlimited)
 G_FPS_BG=0            # gamescope -o (unfocused refresh, Hz; 0 = disabled / omit -o)
 
 # VRR / HDR / cursor flags
@@ -245,31 +248,85 @@ start_steam_child_exit_watcher() {
 
 start_desktop_steam_spawn_watcher() {
   # start_desktop_steam_spawn_watcher <gamescope_pid>
-  # If a non-gamepadui Steam appears while gamescope is alive, assume
+  #
+  # Futureproofing:
+  #   Original implementation could false-positive off any host Steam activity.
+  #   This version:
+  #     - restricts to current UID
+  #     - uses a baseline PID set (only reacts to newly-seen Steam PIDs)
+  #     - ignores steamcmd/steamservice/steamwebhelper
+  #
+  # If a new non-gamepadui Steam appears while gamescope is alive, assume
   # desktop switch attempt and request shutdown.
+  #
   # Echoes watcher PID, or 0 if not started.
   local gs_pid=${1:-0}
 
   [[ "$gs_pid" =~ ^[0-9]+$ ]] || { echo 0; return 0; }
   (( gs_pid > 0 )) || { echo 0; return 0; }
-  command -v ps >/dev/null 2>&1 || { echo 0; return 0; }
+  command -v pgrep >/dev/null 2>&1 || { echo 0; return 0; }
 
   (
     set +e
     sleep 5
 
+    local uid="${UID:-$(id -u)}"
+    local -A baseline=()
+    local pid
+
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] || continue
+      baseline["$pid"]=1
+    done < <(pgrep -u "$uid" -f '(^|/)(steam)([[:space:]]|$)' 2>/dev/null || true)
+
     while kill -0 "$gs_pid" 2>/dev/null; do
-      if ps -eo pid=,ppid=,args= 2>/dev/null | awk -v gpid="$gs_pid" '
-        BEGIN { found=0 }
-        /steam/ && !/-gamepadui/ && !/steamwebhelper/ {
-          if ($2 != gpid) { found=1 }
-        }
-        END { exit(found ? 0 : 1) }
-      '; then
-        print_warn "Detected host Steam desktop-mode spawn attempt; requesting Steam shutdown."
+      local found_pid=""
+      while IFS= read -r pid; do
+        [[ -n "$pid" ]] || continue
+        [[ -n "${baseline[$pid]-}" ]] && continue
+
+        # Read cmdline (NUL-separated)
+        if [[ -r "/proc/$pid/cmdline" ]]; then
+          local cmdline
+          cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+
+          # Ignore obvious non-client tools
+          case "$cmdline" in
+            *steamwebhelper*) baseline["$pid"]=1; continue ;;
+            *steamcmd*)       baseline["$pid"]=1; continue ;;
+            *steamservice*)   baseline["$pid"]=1; continue ;;
+          esac
+
+          # Ignore anything explicitly gamepadui (inside or outside)
+          if [[ "$cmdline" == *"-gamepadui"* ]]; then
+            baseline["$pid"]=1
+            continue
+          fi
+
+          # Ignore if it's a child of gamescope (likely inside session)
+          if [[ -r "/proc/$pid/stat" ]]; then
+            local ppid
+            ppid="$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null || true)"
+            if [[ "$ppid" =~ ^[0-9]+$ ]] && (( ppid == gs_pid )); then
+              baseline["$pid"]=1
+              continue
+            fi
+          fi
+
+          # New non-gamepadui steam client found (likely desktop spawn)
+          found_pid="$pid"
+          break
+        fi
+
+        baseline["$pid"]=1
+      done < <(pgrep -u "$uid" -f '(^|/)(steam)([[:space:]]|$)' 2>/dev/null || true)
+
+      if [[ -n "$found_pid" ]]; then
+        print_warn "Detected host Steam desktop-mode spawn attempt (pid $found_pid); requesting Steam shutdown."
         kill_gamescope || true
         break
       fi
+
       sleep 1
     done
   ) &
@@ -438,6 +495,8 @@ Config:
       POST_CMD runs when the gamescope session ends (natural exit, crash, or kill),
                and also when you explicitly run 'smtty -k'.
 
+      NOTE: Profile files are sourced as shell (trusted). Do not share profiles you do not trust.
+
   $LAST_PROFILE_FILE
       Tracks the last used profile name for -l flag.
 
@@ -454,8 +513,9 @@ Notes:
     (Hyprland, Sway, KDE, GNOME, etc.). Resolution and scaling are always
     applied via gamescope runtime flags, not permanent display config writes.
   - Profile names can contain letters, numbers, hyphens, and underscores.
-  - By default, smtty will ask whether to use last settings when
-    a config exists, unless you explicitly pass -l or -c.
+  - Refresh (G_FPS):
+      0 = auto-detect max via modetest if available; otherwise unlimited (omit -r).
+      >0 = force a fixed refresh via gamescope -r.
 EOF
 }
 
@@ -782,7 +842,7 @@ print_config_summary() {
   echo "  Native mode:              $DRM_NATIVE_MODE"
   echo "  Game resolution:          ${GAME_W}x${GAME_H}"
   echo "  Stretch flag:             $STRETCH_FLAG"
-  echo "  gamescope display rate:   $G_FPS Hz (0 = unlimited, -r)"
+  echo "  gamescope display rate:   $G_FPS Hz (0 = auto-detect max via modetest; else unlimited, -r)"
   echo "  gamescope unfocused rate: $G_FPS_BG Hz (0 = disabled, -o omitted)"
   echo "  gamescope adaptive-sync:  $ADAPTIVE_SYNC"
   echo "  gamescope HDR enabled:    $ENABLE_GAMESCOPE_HDR"
@@ -855,6 +915,8 @@ load_profile_file() {
     return 1
   fi
 
+  # SECURITY NOTE:
+  #   This sources shell from the profile file. Treat profiles as trusted input.
   # shellcheck source=/dev/null
   . "$profile_path"
   HAVE_CONFIG=1
@@ -1152,8 +1214,9 @@ detect_max_refresh_for_current_output() {
 }
 
 init_default_refresh_for_output() {
-  # Only auto-set if we don't already have a specific refresh saved.
-  # G_FPS == 0 is treated as "auto" / "not set yet".
+  # Current behavior preserved:
+  #   If G_FPS == 0: try to auto-detect max refresh via modetest.
+  #   If modetest not available or parse fails: leave at 0 (unlimited / omit -r).
   if (( G_FPS != 0 )); then
     return 0
   fi
@@ -1307,7 +1370,7 @@ choose_resolution_profile() {
       "Custom"; then
       return 1
     fi
-    case $REPLY in
+    case "$REPLY" in
       1) GAME_W=2560; GAME_H=1440 ;;
       2) GAME_W=1920; GAME_H=1440 ;;
       3) GAME_W=1920; GAME_H=1200 ;;
@@ -1323,7 +1386,7 @@ choose_resolution_profile() {
       "Custom"; then
       return 1
     fi
-    case $REPLY in
+    case "$REPLY" in
       1) GAME_W=3840; GAME_H=2160 ;;
       2) GAME_W=2560; GAME_H=1440 ;;
       3) GAME_W=1920; GAME_H=1440 ;;
@@ -1339,7 +1402,7 @@ choose_resolution_profile() {
     "Stretch to fill (gamescope -S stretch)"; then
     return 1
   fi
-  case $REPLY in
+  case "$REPLY" in
     1) STRETCH_FLAG="none" ;;
     2) STRETCH_FLAG="stretch" ;;
     *) STRETCH_FLAG="none" ;;
@@ -1375,7 +1438,7 @@ choose_resolution_profile() {
 
 choose_gamescope_rate() {
   local val
-  val=$(read_default "Target display refresh for gamescope (-r, Hz, 0 = unlimited)" "$G_FPS")
+  val=$(read_default "Target display refresh for gamescope (-r, Hz; 0 = auto-detect max via modetest, else unlimited)" "$G_FPS")
   if [[ "$val" == "$BACK_SENTINEL" ]]; then
     return 1
   fi
@@ -2343,13 +2406,17 @@ request_steam_shutdown() {
 }
 
 kill_steam_client() {
+  # Futureproofing:
+  #   Prefer graceful shutdown first. If still alive, kill only the main client
+  #   and helpers, avoiding broad "pkill steam" that can hit steamcmd, etc.
+
   if ! pgrep -x steam >/dev/null 2>&1; then
     echo "No Steam client processes found."
     return 0
   fi
 
   echo "Stopping Steam client..."
-  pkill steam >/dev/null 2>&1 || true
+  request_steam_shutdown || true
 
   local i
   for ((i = 0; i < 40; i++)); do
@@ -2360,7 +2427,29 @@ kill_steam_client() {
     sleep 0.25
   done
 
-  print_error "Steam still appears to be running after waiting ~10 seconds."
+  print_warn "Steam still appears to be running; sending SIGTERM to steam."
+  pkill -x -TERM steam >/dev/null 2>&1 || true
+
+  for ((i = 0; i < 40; i++)); do
+    if ! pgrep -x steam >/dev/null 2>&1; then
+      print_success "Steam client stopped."
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  print_warn "Steam still appears to be running; terminating steamwebhelper if present."
+  pkill -x -TERM steamwebhelper >/dev/null 2>&1 || true
+
+  for ((i = 0; i < 40; i++)); do
+    if ! pgrep -x steam >/dev/null 2>&1; then
+      print_success "Steam client stopped."
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  print_error "Steam still appears to be running after waiting ~30 seconds."
   echo "Aborting smtty launch to avoid a broken gamescope start."
   exit 1
 }
@@ -2376,9 +2465,12 @@ handle_running_steam_before_launch() {
     return 0
   fi
 
-  # -l or -c: never auto-kill, just respect existing Steam
+  # Futureproofing: -l / -c previously proceeded even if Steam was running,
+  # which commonly causes confusing failures (Steam reuses existing instance).
   if (( FLAG_LAST )) || [[ -n "$SELECTED_PROFILE" ]]; then
-    return 0
+    print_warn "Steam is already running. For -l/-c launches, use -S to stop desktop Steam first."
+    echo "Aborting smtty launch to avoid a broken gamescope start."
+    exit 0
   fi
 
   echo "Steam client is currently running."
@@ -2480,8 +2572,8 @@ launch_vanilla_gamescope() {
   mkdir -p "$CONFIG_DIR"
   local gs_log="$CONFIG_DIR/gamescope-session.$$.log"
   local gs_pid_file="$CONFIG_DIR/gamescope-session.$$.pid"
-  : > "$gs_log"
-  : > "$gs_pid_file"
+  : >"$gs_log"
+  : >"$gs_pid_file"
 
   local gspid=0
   local marker_watch_pid=0
@@ -2546,9 +2638,18 @@ launch_vanilla_gamescope() {
   steam_child_watch_pid=$(start_steam_child_exit_watcher "$gspid" || echo 0)
   desktop_spawn_watch_pid=$(start_desktop_steam_spawn_watcher "$gspid" || echo 0)
 
+  # Futureproofing:
+  #   If we launched via `script`, the real gamescope PID is not a child of this shell.
+  #   Waiting on it can fail. Wait on the `script` wrapper process instead.
   local gs_status=0
-  if ! wait "$gspid"; then
-    gs_status=$?
+  if [[ "$wrapper_pid" =~ ^[0-9]+$ ]] && (( wrapper_pid > 0 )); then
+    if ! wait "$wrapper_pid"; then
+      gs_status=$?
+    fi
+  else
+    if ! wait "$gspid"; then
+      gs_status=$?
+    fi
   fi
 
   if [[ "$marker_watch_pid" =~ ^[0-9]+$ ]] && (( marker_watch_pid > 0 )); then
@@ -2588,7 +2689,7 @@ launch_gamescope_session() {
   echo "  Outer (panel/native):  ${NATIVE_W}x${NATIVE_H}"
   echo "  Inner (game):          ${GAME_W}x${GAME_H}"
   echo "  Stretch mode:          ${STRETCH_FLAG}"
-  echo "  Target refresh:        ${G_FPS} Hz (gamescope -r, 0 = unlimited)"
+  echo "  Target refresh:        ${G_FPS} Hz (0 = auto-detect max via modetest; else unlimited)"
   echo "  Unfocused refresh:     ${G_FPS_BG} Hz (gamescope -o, 0 = disabled / omitted)"
   echo "  Adaptive sync (VRR):   ${ADAPTIVE_SYNC}"
   echo "  HDR enabled:           ${ENABLE_GAMESCOPE_HDR}"
@@ -2866,7 +2967,7 @@ kill_gamescope() {
     gs_pids+=("$state_pid")
   fi
 
-  # Add any gamescope PIDs we can find.
+  # Add any gamescope PIDs we can find (restricted to current UID to avoid multi-user weirdness).
   if command -v pgrep >/dev/null 2>&1; then
     local pid
     while IFS= read -r pid; do
@@ -2874,19 +2975,19 @@ kill_gamescope() {
       [[ -n "${seen[$pid]-}" ]] && continue
       seen["$pid"]=1
       gs_pids+=("$pid")
-    done < <(pgrep -x gamescope 2>/dev/null || true)
+    done < <(pgrep -u "$UID" -x gamescope 2>/dev/null || true)
 
-    # If exact-name match found nothing, fall back to cmdline match.
+    # If exact-name match found nothing, fall back to cmdline match (still UID-limited).
     if (( ${#gs_pids[@]} == 0 )); then
       while IFS= read -r pid; do
         [[ -n "$pid" ]] || continue
         [[ -n "${seen[$pid]-}" ]] && continue
         seen["$pid"]=1
         gs_pids+=("$pid")
-      done < <(pgrep -f '(^|/)(gamescope)([[:space:]]|$)' 2>/dev/null || true)
+      done < <(pgrep -u "$UID" -f '(^|/)(gamescope)([[:space:]]|$)' 2>/dev/null || true)
     fi
   else
-    # No pgrep: /proc scan (no extra deps, no `ps | grep`).
+    # No pgrep: /proc scan (best-effort, UID filtering via ownership is not trivial without stat).
     local d pid comm cmdline
     for d in /proc/[0-9]*; do
       pid="${d#/proc/}"
@@ -2899,7 +3000,6 @@ kill_gamescope() {
         fi
       fi
 
-      # Fallback: cmdline contains "gamescope"
       if [[ -r "$d/cmdline" ]]; then
         cmdline="$(tr '\0' ' ' <"$d/cmdline" 2>/dev/null || true)"
         if [[ "$cmdline" == *"gamescope"* ]]; then
@@ -2917,16 +3017,8 @@ kill_gamescope() {
     return 0
   fi
 
-  # Graceful stop: ask Steam to shutdown (should cause gamescope to exit).
-  local -a shutdown_cmd=()
-  if [[ "${STEAM_TYPE:-native}" == "flatpak" ]]; then
-    shutdown_cmd=(flatpak run com.valvesoftware.Steam -shutdown)
-  else
-    shutdown_cmd=(steam -shutdown)
-  fi
-
   print_info "Requesting Steam shutdown..."
-  "${shutdown_cmd[@]}" >/dev/null 2>&1 || true
+  request_steam_shutdown || true
 
   # Wait for tracked PIDs to exit.
   local i any_alive
@@ -2949,7 +3041,7 @@ kill_gamescope() {
   if (( ended )); then
     print_success "Steam shutdown requested; gamescope session ended."
   else
-    # Last-resort (still no extra deps): TERM any still-alive tracked PIDs.
+    # Last-resort: TERM any still-alive tracked PIDs.
     print_warn "Steam shutdown did not end gamescope quickly; sending SIGTERM to remaining gamescope PIDs."
     local p
     for p in "${gs_pids[@]}"; do
@@ -2958,7 +3050,6 @@ kill_gamescope() {
       fi
     done
 
-    # Short wait after TERM.
     for ((i = 0; i < 20; i++)); do
       any_alive=0
       for p in "${gs_pids[@]}"; do
@@ -3028,12 +3119,10 @@ interactive_profile_menu() {
         else
           echo "No other profiles available or selection cancelled."
         fi
-        # Always return to the menu after this path (matches delete behavior)
         continue
         ;;
       3)
         if ! interactive_new_config 1; then
-          # user hit back somewhere in wizard; redisplay menu
           continue
         fi
         return 0
@@ -3044,7 +3133,6 @@ interactive_profile_menu() {
         else
           echo "No profiles available to delete."
         fi
-        # After delete, show menu again
         continue
         ;;
       *)
@@ -3054,11 +3142,25 @@ interactive_profile_menu() {
   done
 }
 
+cleanup_old_session_artifacts() {
+  # Best-effort: remove stale gamescope-session logs/pidfiles from crashes.
+  # Keeps recent files (current run uses $$ anyway).
+  command -v find >/dev/null 2>&1 || return 0
+  [[ -d "$CONFIG_DIR" ]] || return 0
+
+  # Remove anything older than 7 days.
+  find "$CONFIG_DIR" -maxdepth 1 \
+    \( -name 'gamescope-session.*.log' -o -name 'gamescope-session.*.pid' \) \
+    -type f -mtime +7 -print0 2>/dev/null | xargs -0r rm -f 2>/dev/null || true
+}
+
 # ---------------- main ----------------
 if [[ ${UID:-$(id -u)} -eq 0 ]]; then
   print_error "Do not run as root. Use your regular user account."
   exit 1
 fi
+
+cleanup_old_session_artifacts
 
 while getopts ":hnlpkdOSc:LD:" opt; do
   case "$opt" in
@@ -3135,9 +3237,6 @@ if (( FLAG_LAST )); then
     interactive_new_config 0
     exit 0
   fi
-  # At this point: no special flags, just plain `smtty`.
-  # If we don't have a valid last_profile loaded, but profiles exist,
-  # pick one and THEN go through the normal menu (do not auto-launch).
   run_from_current_config
 fi
 
@@ -3150,11 +3249,9 @@ if (( HAVE_CONFIG == 0 )); then
   if select_profile_interactive "use"; then
     load_profile_by_name "$CURRENT_PROFILE" || true
   else
-    # No profiles at all -> full setup wizard
     interactive_new_config 0
     exit 0
   fi
 fi
 
-# Now we definitely have a loaded profile, so show the menu.
 interactive_profile_menu
