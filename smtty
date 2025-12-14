@@ -36,7 +36,7 @@
 #     Print saved config summary and exit.
 #
 #   -k
-#     Kill any running gamescope processes and exit.
+#     Request Steam shutdown to end any running gamescope session and exit.
 #     If a profile defines a POST_CMD, it is run after audio restore.
 #
 #   -d
@@ -194,7 +194,7 @@ start_desktop_switch_watcher() {
     set +e
     tail -n 0 -F "$log_file" 2>/dev/null | while IFS= read -r line; do
       if line_matches_desktop_switch_marker "$line"; then
-        print_warn "Detected Desktop Mode marker; killing gamescope."
+        print_warn "Detected Desktop Mode marker; requesting Steam shutdown."
         kill_gamescope || true
         break
       fi
@@ -212,7 +212,7 @@ start_desktop_switch_watcher() {
 
 start_steam_child_exit_watcher() {
   # start_steam_child_exit_watcher <gamescope_pid>
-  # If Steam payload seems to exit while gamescope is alive, kill gamescope.
+  # If Steam payload seems to exit while gamescope is alive, request shutdown.
   # Echoes watcher PID, or 0 if not started.
   local gs_pid=${1:-0}
 
@@ -231,7 +231,7 @@ start_steam_child_exit_watcher() {
         if kill -0 "$gs_pid" 2>/dev/null && \
            ! pgrep -P "$gs_pid" -f -i '(steam|steamwebhelper|com\.valvesoftware\.Steam|flatpak)' \
              >/dev/null 2>&1; then
-          print_warn "Steam payload appears to have exited; killing gamescope."
+          print_warn "Steam payload appears to have exited; requesting Steam shutdown."
           kill_gamescope || true
           break
         fi
@@ -246,7 +246,7 @@ start_steam_child_exit_watcher() {
 start_desktop_steam_spawn_watcher() {
   # start_desktop_steam_spawn_watcher <gamescope_pid>
   # If a non-gamepadui Steam appears while gamescope is alive, assume
-  # desktop switch attempt and kill gamescope.
+  # desktop switch attempt and request shutdown.
   # Echoes watcher PID, or 0 if not started.
   local gs_pid=${1:-0}
 
@@ -266,7 +266,7 @@ start_desktop_steam_spawn_watcher() {
         }
         END { exit(found ? 0 : 1) }
       '; then
-        print_warn "Detected host Steam desktop-mode spawn attempt; killing gamescope."
+        print_warn "Detected host Steam desktop-mode spawn attempt; requesting Steam shutdown."
         kill_gamescope || true
         break
       fi
@@ -290,6 +290,22 @@ backable_read() {
   return 0
 }
 
+read_one_key() {
+  # read_one_key <var_name> <prompt>
+  # Reads a single keypress (no Enter). Returns 1 if key was 'b'.
+  local __var_name=$1
+  local __prompt=$2
+  local __ch=""
+  printf '%s' "$__prompt"
+  IFS= read -rsn1 __ch || exit 1
+  printf '\n'
+  if [[ "$__ch" == "b" ]]; then
+    return 1
+  fi
+  printf -v "$__var_name" '%s' "$__ch"
+  return 0
+}
+
 prompt_select() {
   local prompt=$1
   shift
@@ -302,9 +318,16 @@ prompt_select() {
   done
   local sel
   while :; do
-    if ! backable_read sel "$prompt (b = back): "; then
-      return 1
+    if (( count <= 9 )); then
+      if ! read_one_key sel "$prompt (1-$count, b = back): "; then
+        return 1
+      fi
+    else
+      if ! backable_read sel "$prompt (b = back): "; then
+        return 1
+      fi
     fi
+
     if [[ ! "$sel" =~ ^[0-9]+$ ]]; then
       echo "Enter a number."
       continue
@@ -330,9 +353,16 @@ prompt_select_default() {
   done
   local sel
   while :; do
-    if ! backable_read sel "$prompt [$default_index] (b = back): "; then
-      return 1
+    if (( count <= 9 )); then
+      if ! read_one_key sel "$prompt [$default_index] (b = back): "; then
+        return 1
+      fi
+    else
+      if ! backable_read sel "$prompt [$default_index] (b = back): "; then
+        return 1
+      fi
     fi
+
     if [[ -z "$sel" ]]; then
       sel=$default_index
     fi
@@ -379,7 +409,7 @@ Options:
   -L        List all available configuration profiles.
   -D <name> Delete specified configuration profile.
   -p        Print saved config summary and exit.
-  -k        Kill any running gamescope processes and exit.
+  -k        Request Steam shutdown to end any running gamescope session and exit.
             If the active session profile defines a POST_CMD, it is run after audio restore.
   -d        Detach: start gamescope/Steam in the background and return immediately.
             In detach mode, automatic POST_CMD on gamescope exit is not guaranteed.
@@ -1195,9 +1225,16 @@ choose_drm_output() {
 
   local choice
   while :; do
-    if ! backable_read choice "Select output [1-${#entries[@]}, b = back]: "; then
-      return 1
+    if ((${#entries[@]} <= 9)); then
+      if ! read_one_key choice "Select output [1-${#entries[@]}, b = back]: "; then
+        return 1
+      fi
+    else
+      if ! backable_read choice "Select output [1-${#entries[@]}, b = back]: "; then
+        return 1
+      fi
     fi
+
     if [[ ! "$choice" =~ ^[0-9]+$ ]]; then
       echo "Enter a number."
       continue
@@ -1602,8 +1639,14 @@ choose_audio_switch() {
 
   local choice
   while :; do
-    if ! backable_read choice "Choose sink to use while gamescope is running [1-${#sink_names[@]}, b = back]: "; then
-      return 1
+    if ((${#sink_names[@]} <= 9)); then
+      if ! read_one_key choice "Choose sink to use while gamescope is running [1-${#sink_names[@]}, b = back]: "; then
+        return 1
+      fi
+    else
+      if ! backable_read choice "Choose sink to use while gamescope is running [1-${#sink_names[@]}, b = back]: "; then
+        return 1
+      fi
     fi
     if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#sink_names[@]} )); then
       break
@@ -2045,6 +2088,23 @@ steam_is_running() {
   pgrep -x steam >/dev/null 2>&1
 }
 
+request_steam_shutdown() {
+  # Try native first; if that fails and Flatpak exists, try Flatpak.
+  if command -v steam >/dev/null 2>&1; then
+    if steam -shutdown >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  if command -v flatpak >/dev/null 2>&1; then
+    if flatpak list --app 2>/dev/null | grep -q "com.valvesoftware.Steam"; then
+      if flatpak run com.valvesoftware.Steam -shutdown >/dev/null 2>&1; then
+        return 0
+      fi
+    fi
+  fi
+  return 1
+}
+
 kill_steam_client() {
   if ! pgrep -x steam >/dev/null 2>&1; then
     echo "No Steam client processes found."
@@ -2176,7 +2236,7 @@ launch_vanilla_gamescope() {
     audio_switch_start_for_pid "$gspid"
     write_session_state "$gspid"
     print_success "gamescope started in detached mode with PID $gspid."
-    echo "Use 'smtty -k' to kill any running gamescope processes."
+    echo "Use 'smtty -k' to request Steam shutdown and end the session."
     exit 0
   fi
 
@@ -2546,28 +2606,148 @@ generate_launch_opts() {
 
 kill_gamescope() {
   local had_gs=0
+  local ended=0
   local state_profile=""
   local state_pid=0
+
+  local -a gs_pids=()
+  local -A seen=()
 
   if read_session_state; then
     state_profile="${SESSION_PROFILE:-}"
     state_pid="${SESSION_PID:-0}"
   fi
 
+  # Load profile tied to the recorded session so POST_CMD matches.
   if [[ -n "$state_profile" ]]; then
     load_profile_by_name "$state_profile" >/dev/null 2>&1 || true
   fi
 
-  if pkill gamescope >/dev/null 2>&1; then
+  # Prefer the recorded session PID if it is alive.
+  if [[ "$state_pid" =~ ^[0-9]+$ ]] && (( state_pid > 0 )) && kill -0 "$state_pid" 2>/dev/null; then
+    seen["$state_pid"]=1
+    gs_pids+=("$state_pid")
+  fi
+
+  # Add any gamescope PIDs we can find.
+  if command -v pgrep >/dev/null 2>&1; then
+    local pid
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] || continue
+      [[ -n "${seen[$pid]-}" ]] && continue
+      seen["$pid"]=1
+      gs_pids+=("$pid")
+    done < <(pgrep -x gamescope 2>/dev/null || true)
+
+    # If exact-name match found nothing, fall back to cmdline match.
+    if (( ${#gs_pids[@]} == 0 )); then
+      while IFS= read -r pid; do
+        [[ -n "$pid" ]] || continue
+        [[ -n "${seen[$pid]-}" ]] && continue
+        seen["$pid"]=1
+        gs_pids+=("$pid")
+      done < <(pgrep -f '(^|/)(gamescope)([[:space:]]|$)' 2>/dev/null || true)
+    fi
+  else
+    # No pgrep: /proc scan (no extra deps, no `ps | grep`).
+    local d pid comm cmdline
+    for d in /proc/[0-9]*; do
+      pid="${d#/proc/}"
+
+      comm=""
+      if IFS= read -r comm <"$d/comm" 2>/dev/null; then
+        if [[ "$comm" == "gamescope" ]]; then
+          [[ -n "${seen[$pid]-}" ]] || { seen["$pid"]=1; gs_pids+=("$pid"); }
+          continue
+        fi
+      fi
+
+      # Fallback: cmdline contains "gamescope"
+      if [[ -r "$d/cmdline" ]]; then
+        cmdline="$(tr '\0' ' ' <"$d/cmdline" 2>/dev/null || true)"
+        if [[ "$cmdline" == *"gamescope"* ]]; then
+          [[ -n "${seen[$pid]-}" ]] || { seen["$pid"]=1; gs_pids+=("$pid"); }
+        fi
+      fi
+    done
+  fi
+
+  if (( ${#gs_pids[@]} > 0 )); then
     had_gs=1
-    print_success "Killed gamescope processes."
   else
     echo "No gamescope processes found."
+    audio_restore_from_state
+    return 0
+  fi
+
+  # Graceful stop: ask Steam to shutdown (should cause gamescope to exit).
+  local -a shutdown_cmd=()
+  if [[ "${STEAM_TYPE:-native}" == "flatpak" ]]; then
+    shutdown_cmd=(flatpak run com.valvesoftware.Steam -shutdown)
+  else
+    shutdown_cmd=(steam -shutdown)
+  fi
+
+  print_info "Requesting Steam shutdown..."
+  "${shutdown_cmd[@]}" >/dev/null 2>&1 || true
+
+  # Wait for tracked PIDs to exit.
+  local i any_alive
+  for ((i = 0; i < 80; i++)); do
+    any_alive=0
+    local p
+    for p in "${gs_pids[@]}"; do
+      if [[ "$p" =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; then
+        any_alive=1
+        break
+      fi
+    done
+    if (( ! any_alive )); then
+      ended=1
+      break
+    fi
+    sleep 0.25
+  done
+
+  if (( ended )); then
+    print_success "Steam shutdown requested; gamescope session ended."
+  else
+    # Last-resort (still no extra deps): TERM any still-alive tracked PIDs.
+    print_warn "Steam shutdown did not end gamescope quickly; sending SIGTERM to remaining gamescope PIDs."
+    local p
+    for p in "${gs_pids[@]}"; do
+      if [[ "$p" =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; then
+        kill -TERM "$p" 2>/dev/null || true
+      fi
+    done
+
+    # Short wait after TERM.
+    for ((i = 0; i < 20; i++)); do
+      any_alive=0
+      for p in "${gs_pids[@]}"; do
+        if [[ "$p" =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; then
+          any_alive=1
+          break
+        fi
+      done
+      if (( ! any_alive )); then
+        ended=1
+        break
+      fi
+      sleep 0.25
+    done
+
+    if (( ended )); then
+      print_success "gamescope exited after SIGTERM."
+    else
+      print_warn "gamescope still appears to be running."
+    fi
   fi
 
   audio_restore_from_state
 
-  if (( had_gs )); then
+  # Only run/mark POST if the session actually ended here.
+  if (( ended )); then
     if [[ "$state_pid" =~ ^[0-9]+$ ]] && (( state_pid > 0 )); then
       if ! post_already_ran_for_pid "$state_pid"; then
         run_post_hook
@@ -2595,7 +2775,7 @@ interactive_profile_menu() {
     echo "  [b] Exit"
 
     local choice
-    if ! backable_read choice "Choose option [1-4, b = exit]: "; then
+    if ! read_one_key choice "Choose option [1-4, b = exit]: "; then
       echo "Exiting."
       exit 0
     fi
