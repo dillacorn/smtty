@@ -1344,96 +1344,133 @@ choose_resolution_profile() {
   GAME_H=$NATIVE_H
   STRETCH_FLAG="none"
 
-  local custom_profile=0
+  custom_resolution_prompt() {
+    local w h
+    while :; do
+      read -r -p "Custom width in px [${NATIVE_W}] (or 'q' to cancel): " w
+      [[ $w == "q" || $w == "Q" ]] && return 1
+      w="${w:-$NATIVE_W}"
+      [[ $w =~ ^[0-9]+$ ]] && (( w >= 320 && w <= 16384 )) && break
+      echo "Invalid width: $w"
+    done
+    while :; do
+      read -r -p "Custom height in px [${NATIVE_H}] (or 'q' to cancel): " h
+      [[ $h == "q" || $h == "Q" ]] && return 1
+      h="${h:-$NATIVE_H}"
+      [[ $h =~ ^[0-9]+$ ]] && (( h >= 240 && h <= 16384 )) && break
+      echo "Invalid height: $h"
+    done
+    GAME_W=$w
+    GAME_H=$h
+    return 0
+  }
+
+  ask_stretch_if_needed() {
+    STRETCH_FLAG="none"
+
+    # Same resolution or same aspect ratio: no stretch question.
+    if (( GAME_W == NATIVE_W && GAME_H == NATIVE_H )); then
+      return 0
+    fi
+    if (( GAME_W * NATIVE_H == GAME_H * NATIVE_W )); then
+      return 0
+    fi
+
+    local _saved_reply="${REPLY-}"
+    if ! prompt_select_default "Stretch mode" 1 \
+      "Stretch to fill ${NATIVE_W}x${NATIVE_H} (distorts)" \
+      "Keep aspect (black bars)"; then
+      return 1
+    fi
+    local stretch_choice="$REPLY"
+    REPLY="$_saved_reply"
+
+    case "$stretch_choice" in
+      1) STRETCH_FLAG="stretch" ;;
+      2) STRETCH_FLAG="none" ;;
+    esac
+    return 0
+  }
 
   if [[ $NATIVE_W -eq 1920 && $NATIVE_H -eq 1080 ]]; then
     echo "Resolution profile for 1080p 16:9:"
     if ! prompt_select_default "Choose profile" 1 \
       "Native 1920x1080" \
+      "1280x960 (4:3 base)" \
+      "1440x1080 (4:3 base)" \
       "1352x1080 (4:3 base)" \
+      "1600x1200 (4:3 base, downscale)" \
       "1680x1050 (16:10 base)" \
+      "1728x1080 (16:10 base)" \
+      "1920x1200 (16:10 base, downscale)" \
       "Custom"; then
       return 1
     fi
-    case $REPLY in
+    case "$REPLY" in
       1) GAME_W=1920; GAME_H=1080 ;;
-      2) GAME_W=1352; GAME_H=1080 ;;
-      3) GAME_W=1680; GAME_H=1050 ;;
-      4) custom_profile=1 ;;
+      2) GAME_W=1280; GAME_H=960 ;;
+      3) GAME_W=1440; GAME_H=1080 ;;
+      4) GAME_W=1352; GAME_H=1080 ;;
+      5) GAME_W=1600; GAME_H=1200 ;;
+      6) GAME_W=1680; GAME_H=1050 ;;
+      7) GAME_W=1728; GAME_H=1080 ;;
+      8) GAME_W=1920; GAME_H=1200 ;;
+      9) custom_resolution_prompt || return 1 ;;
     esac
+    ask_stretch_if_needed || return 1
+
   elif [[ $NATIVE_W -eq 2560 && $NATIVE_H -eq 1440 ]]; then
     echo "Resolution profile for 1440p 16:9:"
     if ! prompt_select_default "Choose profile" 1 \
       "Native 2560x1440" \
+      "1600x1200 (4:3 base)" \
       "1920x1440 (4:3 base)" \
       "1920x1200 (16:10 base)" \
+      "2304x1440 (16:10 base)" \
       "Custom"; then
       return 1
     fi
     case "$REPLY" in
       1) GAME_W=2560; GAME_H=1440 ;;
-      2) GAME_W=1920; GAME_H=1440 ;;
-      3) GAME_W=1920; GAME_H=1200 ;;
-      4) custom_profile=1 ;;
+      2) GAME_W=1600; GAME_H=1200 ;;
+      3) GAME_W=1920; GAME_H=1440 ;;
+      4) GAME_W=1920; GAME_H=1200 ;;
+      5) GAME_W=2304; GAME_H=1440 ;;
+      6) custom_resolution_prompt || return 1 ;;
     esac
+    ask_stretch_if_needed || return 1
+
   elif [[ $NATIVE_W -eq 3840 && $NATIVE_H -eq 2160 ]]; then
     echo "Resolution profile for 4K 16:9:"
     if ! prompt_select_default "Choose profile" 1 \
       "Native 3840x2160" \
       "2560x1440 (downscale base)" \
       "1920x1440 (4:3 base)" \
+      "2880x2160 (4:3 base)" \
+      "3200x2400 (4:3 base)" \
       "1920x1200 (16:10 base)" \
+      "2560x1600 (16:10 base)" \
+      "2880x1800 (16:10 base)" \
+      "3200x2000 (16:10 base)" \
+      "3456x2160 (16:10 base)" \
       "Custom"; then
       return 1
     fi
     case "$REPLY" in
-      1) GAME_W=3840; GAME_H=2160 ;;
-      2) GAME_W=2560; GAME_H=1440 ;;
-      3) GAME_W=1920; GAME_H=1440 ;;
-      4) GAME_W=1920; GAME_H=1200 ;;
-      5) custom_profile=1 ;;
+      1)  GAME_W=3840; GAME_H=2160 ;;
+      2)  GAME_W=2560; GAME_H=1440 ;;
+      3)  GAME_W=1920; GAME_H=1440 ;;
+      4)  GAME_W=2880; GAME_H=2160 ;;
+      5)  GAME_W=3200; GAME_H=2400 ;;
+      6)  GAME_W=1920; GAME_H=1200 ;;
+      7)  GAME_W=2560; GAME_H=1600 ;;
+      8)  GAME_W=2880; GAME_H=1800 ;;
+      9)  GAME_W=3200; GAME_H=2000 ;;
+      10) GAME_W=3456; GAME_H=2160 ;;
+      11) custom_resolution_prompt || return 1 ;;
     esac
+    ask_stretch_if_needed || return 1
   fi
-
-  echo
-  echo "Scaling / stretch mode for outer ${NATIVE_W}x${NATIVE_H}:"
-  if ! prompt_select_default "How should gamescope scale the game image" 1 \
-    "No stretch (preserve aspect, letterbox/pillarbox)" \
-    "Stretch to fill (gamescope -S stretch)"; then
-    return 1
-  fi
-  case "$REPLY" in
-    1) STRETCH_FLAG="none" ;;
-    2) STRETCH_FLAG="stretch" ;;
-    *) STRETCH_FLAG="none" ;;
-  esac
-
-  echo
-  local prompt_label
-  if (( custom_profile )); then
-    prompt_label="Custom GAME resolution WxH (gamescope -w/-h)"
-  else
-    prompt_label="Game resolution WxH (gamescope -w/-h)"
-  fi
-
-  local default_str="${GAME_W}x${GAME_H}"
-  local resp
-  resp=$(read_default "$prompt_label" "$default_str")
-  if [[ "$resp" == "$BACK_SENTINEL" ]]; then
-    return 1
-  fi
-  if [[ "$resp" =~ ^([0-9]+)x([0-9]+)$ ]]; then
-    GAME_W=${BASH_REMATCH[1]}
-    GAME_H=${BASH_REMATCH[2]}
-  else
-    echo "Invalid format; keeping $default_str."
-  fi
-
-  echo
-  echo "Game resolution: ${GAME_W}x${GAME_H}"
-  echo "Stretch flag:    ${STRETCH_FLAG}"
-  echo
-  return 0
 }
 
 choose_gamescope_rate() {
