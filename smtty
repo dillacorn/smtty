@@ -813,6 +813,19 @@ audio_sink_display_name() {
   fi
 }
 
+print_profile_line() {
+  # label | value | note (notes aligned)
+  # Tweak widths here.
+  local label_w=26
+  local value_w=15
+
+  local label="$1"
+  local value="$2"
+  local note="${3:-}"
+
+  printf "  %-${label_w}s %-${value_w}s %s\n" "$label" "$value" "$note"
+}
+
 print_config_summary() {
   # Resolve auto-refresh (G_FPS==0) to detected max if possible.
   init_default_refresh_for_output
@@ -829,39 +842,38 @@ print_config_summary() {
 
   local pre_display="${PRE_CMD:-}"
   local post_display="${POST_CMD:-}"
-  if [[ -z "$pre_display" ]]; then
-    pre_display="(none)"
-  fi
-  if [[ -z "$post_display" ]]; then
-    post_display="(none)"
-  fi
+  [[ -z "$pre_display" ]] && pre_display="(none)"
+  [[ -z "$post_display" ]] && post_display="(none)"
 
   echo "$config_label:"
-  echo "  Steam type:               ${STEAM_TYPE:-native}"
-  echo "  Output:                   $DRM_SHORT"
-  echo "  Native mode:              $DRM_NATIVE_MODE"
-  echo "  Game resolution:          ${GAME_W}x${GAME_H}"
-  echo "  Stretch flag:             $STRETCH_FLAG"
-  echo "  gamescope display rate:   $G_FPS Hz (0 = auto-detect max via modetest; else unlimited, -r)"
-  echo "  gamescope unfocused rate: $G_FPS_BG Hz (0 = disabled, -o omitted)"
-  echo "  gamescope adaptive-sync:  $ADAPTIVE_SYNC"
-  echo "  gamescope HDR enabled:    $ENABLE_GAMESCOPE_HDR"
-  echo "  gamescope HDR nits:       $GAMESCOPE_HDR_NITS"
-  echo "  gamescope force grab:     $FORCE_GRAB_CURSOR"
-  echo "  PipeWire debug mode:      $PIPEWIRE_DEBUG_MODE (inherit or 0-3)"
-  echo "  LD_PRELOAD mode:          ${LD_PRELOAD_MODE:-clear} (inherit or clear)"
-  echo "  Audio switch enabled:     $AUDIO_SWITCH_ENABLED"
+
+  print_profile_line "Steam type:"               "${STEAM_TYPE:-native}"
+  print_profile_line "Output:"                   "$DRM_SHORT"
+  print_profile_line "Native mode:"              "$DRM_NATIVE_MODE"              "(-W <width> -H <height>)"
+  print_profile_line "Game resolution:"          "${GAME_W}x${GAME_H}"            "(-w <width> -h <height>)"
+  print_profile_line "Stretch flag:"             "$STRETCH_FLAG"                 "(-S stretch)"
+  print_profile_line "gamescope display rate:"   "$G_FPS Hz"                     "(-r <Hz>)"
+  print_profile_line "gamescope unfocused rate:" "$G_FPS_BG Hz"                  "(-o <Hz>)"
+  print_profile_line "gamescope adaptive-sync:"  "$ADAPTIVE_SYNC"                "(--adaptive-sync)"
+  print_profile_line "gamescope HDR enabled:"    "$ENABLE_GAMESCOPE_HDR"         "(--hdr-enabled)"
+  print_profile_line "gamescope HDR nits:"       "$GAMESCOPE_HDR_NITS"           "(--hdr-debug-nits <nits>)"
+  print_profile_line "gamescope force grab:"     "$FORCE_GRAB_CURSOR"            "(--force-grab-cursor)"
+  print_profile_line "PipeWire debug mode:"      "$PIPEWIRE_DEBUG_MODE"          "(inherit or 0-3)"
+  print_profile_line "LD_PRELOAD mode:"          "${LD_PRELOAD_MODE:-clear}"     "(inherit or clear)"
+  print_profile_line "Audio switch enabled:"     "$AUDIO_SWITCH_ENABLED"
+
   if (( AUDIO_SWITCH_ENABLED )); then
     local sink_desc
     sink_desc=$(audio_sink_display_name "$AUDIO_SINK_NAME")
-    echo "  Audio sink name:          ${AUDIO_SINK_NAME:-"(unset)"}"
-    echo "  Audio sink description:   ${sink_desc:-"(unresolved)"}"
+    print_profile_line "Audio sink name:"        "${AUDIO_SINK_NAME:-"(unset)"}"
+    print_profile_line "Audio sink description:" "${sink_desc:-"(unresolved)"}"
   fi
-  echo "  Pre-command (async):      $pre_display"
-  echo "  Post-command (on exit):   $post_display"
+
+  print_profile_line "Pre-command (async):"      "$pre_display"
+  print_profile_line "Post-command (on exit):"   "$post_display"
 
   if [[ -n "${AUTO_GBM_BACKENDS_PATH:-}" ]]; then
-    echo "  NVIDIA Flatpak GBM path:  $AUTO_GBM_BACKENDS_PATH (auto)"
+    print_profile_line "NVIDIA Flatpak GBM path:" "$AUTO_GBM_BACKENDS_PATH"      "(auto)"
   fi
 }
 
