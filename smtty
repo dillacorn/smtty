@@ -120,6 +120,9 @@ ENABLE_GAMESCOPE_HDR=0   # 0/1 -> --hdr-enabled/ITM
 GAMESCOPE_HDR_NITS=1000  # used with --hdr-itm-target-nits
 FORCE_GRAB_CURSOR=0      # 0/1 -> --force-grab-cursor
 
+# Low-latency / tearing (advanced; only meaningful in KMS/embedded sessions)
+LOW_LATENCY_TEARING=0   # 0/1: export SteamOS-style tearing capability flags to Steam-in-gamescope
+
 # PipeWire debug control for gamescope
 # "inherit" = do not set PIPEWIRE_DEBUG (respect system / environment)
 # "0"       = errors only (quiet)
@@ -131,8 +134,7 @@ PIPEWIRE_DEBUG_MODE="2"
 # LD_PRELOAD handling for gamescope/Steam
 # "inherit" = do not modify LD_PRELOAD
 # "clear"   = export LD_PRELOAD="" before launching gamescope
-LD_PRELOAD_MODE="clear"
-
+LD_PRELOAD_MODE="inherit"
 # Temporary audio switching (PulseAudio / PipeWire via pactl)
 AUDIO_SWITCH_ENABLED=0   # 0/1: switch default sink while gamescope runs
 AUDIO_SINK_NAME=""       # sink name to use when AUDIO_SWITCH_ENABLED=1
@@ -858,8 +860,9 @@ print_config_summary() {
   print_profile_line "gamescope HDR enabled:"    "$ENABLE_GAMESCOPE_HDR"         "(--hdr-enabled)"
   print_profile_line "gamescope HDR nits:"       "$GAMESCOPE_HDR_NITS"           "(--hdr-debug-nits <nits>)"
   print_profile_line "gamescope force grab:"     "$FORCE_GRAB_CURSOR"            "(--force-grab-cursor)"
+  print_profile_line "Low-latency/tearing:"      "$LOW_LATENCY_TEARING"            "(KMS-only; may tear/break capture)"
   print_profile_line "PipeWire debug mode:"      "$PIPEWIRE_DEBUG_MODE"          "(inherit or 0-3)"
-  print_profile_line "LD_PRELOAD mode:"          "${LD_PRELOAD_MODE:-clear}"     "(inherit or clear)"
+  print_profile_line "LD_PRELOAD mode:"          "${LD_PRELOAD_MODE:-inherit}"     "(inherit or clear)"
   print_profile_line "Audio switch enabled:"     "$AUDIO_SWITCH_ENABLED"
 
   if (( AUDIO_SWITCH_ENABLED )); then
@@ -904,6 +907,7 @@ ADAPTIVE_SYNC=$ADAPTIVE_SYNC
 ENABLE_GAMESCOPE_HDR=$ENABLE_GAMESCOPE_HDR
 GAMESCOPE_HDR_NITS=$GAMESCOPE_HDR_NITS
 FORCE_GRAB_CURSOR=$FORCE_GRAB_CURSOR
+LOW_LATENCY_TEARING=$LOW_LATENCY_TEARING
 PIPEWIRE_DEBUG_MODE=$PIPEWIRE_DEBUG_MODE
 LD_PRELOAD_MODE=$LD_PRELOAD_MODE
 AUDIO_SWITCH_ENABLED=$AUDIO_SWITCH_ENABLED
@@ -935,7 +939,8 @@ load_profile_file() {
 
   PIPEWIRE_DEBUG_MODE=${PIPEWIRE_DEBUG_MODE:-2}
   FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
-  LD_PRELOAD_MODE=${LD_PRELOAD_MODE:-clear}
+  LOW_LATENCY_TEARING=${LOW_LATENCY_TEARING:-0}
+  LD_PRELOAD_MODE=${LD_PRELOAD_MODE:-inherit}
   G_FPS_BG=${G_FPS_BG:-0}
   AUDIO_SWITCH_ENABLED=${AUDIO_SWITCH_ENABLED:-0}
   AUDIO_SINK_NAME=${AUDIO_SINK_NAME:-""}
@@ -1003,6 +1008,7 @@ load_config_default() {
 detect_session_mode() {
   if [[ -n "${WAYLAND_DISPLAY-}" || -n "${DISPLAY-}" ]]; then
     SESSION_MODE="nested"
+    LOW_LATENCY_TEARING=0
   else
     SESSION_MODE="kms"
   fi
@@ -1587,6 +1593,31 @@ choose_vrr_hdr_and_steamos() {
         ;;
     esac
   done
+  echo
+  if [[ "$SESSION_MODE" == "kms" ]]; then
+    echo "Low-latency / tearing (advanced, KMS sessions only):"
+    echo "  Enables SteamOS-style tearing capability flags for Steam running inside gamescope."
+    echo "  Can reduce latency, but may cause visible tearing, break capture, or regress smoothness."
+    local lt
+    while :; do
+      lt=$(read_default "Enable low-latency / tearing mode? (0 = no, 1 = yes)" "$LOW_LATENCY_TEARING")
+      if [[ "$lt" == "$BACK_SENTINEL" ]]; then
+        return 1
+      fi
+      case "$lt" in
+        0|1)
+          LOW_LATENCY_TEARING=$lt
+          break
+          ;;
+        *)
+          echo "Enter 0 or 1."
+          ;;
+      esac
+    done
+  else
+    LOW_LATENCY_TEARING=0
+  fi
+
 
   echo
   return 0
@@ -1654,7 +1685,7 @@ choose_ld_preload_mode() {
   case "$LD_PRELOAD_MODE" in
     inherit) default_choice=1 ;;
     clear)   default_choice=2 ;;
-    *)       default_choice=2 ;;
+    *)       default_choice=1 ;;
   esac
 
   local sel
@@ -2068,10 +2099,13 @@ print_steam_launch_options() {
   if (( enable_multi_xwayland )); then
     env_prefix+="STEAM_MULTIPLE_XWAYLANDS=1 "
   fi
+  if (( LOW_LATENCY_TEARING == 1 )) && [[ "$SESSION_MODE" == "kms" ]]; then
+    env_prefix+="STEAM_GAMESCOPE_TEARING_SUPPORTED=1 STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1 GAMESCOPE_ALLOW_TEARING=1 "
+  fi
   if [[ "${PIPEWIRE_DEBUG_MODE:-2}" != "inherit" ]]; then
     env_prefix+="PIPEWIRE_DEBUG=$PIPEWIRE_DEBUG_MODE "
   fi
-  if [[ "${LD_PRELOAD_MODE:-clear}" == "clear" ]]; then
+  if [[ "${LD_PRELOAD_MODE:-inherit}" == "clear" ]]; then
     env_prefix+='LD_PRELOAD="" '
   fi
 
@@ -2599,6 +2633,9 @@ launch_vanilla_gamescope() {
   if (( enable_multi_xwayland )); then
     printf 'STEAM_MULTIPLE_XWAYLANDS=1 '
   fi
+  if (( LOW_LATENCY_TEARING == 1 )) && [[ "$SESSION_MODE" == "kms" ]]; then
+    printf 'STEAM_GAMESCOPE_TEARING_SUPPORTED=1 STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1 GAMESCOPE_ALLOW_TEARING=1 '
+  fi
   printf 'gamescope'
   printf ' %q' "${args[@]}"
   printf ' --'
@@ -2609,11 +2646,16 @@ launch_vanilla_gamescope() {
 
   run_pre_hook
 
+  if (( LOW_LATENCY_TEARING == 1 )) && [[ "$SESSION_MODE" == "kms" ]]; then
+    export STEAM_GAMESCOPE_TEARING_SUPPORTED=1
+    export STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1
+    export GAMESCOPE_ALLOW_TEARING=1
+  fi
   if [[ "${PIPEWIRE_DEBUG_MODE:-2}" != "inherit" ]]; then
     export PIPEWIRE_DEBUG="$PIPEWIRE_DEBUG_MODE"
   fi
 
-  if [[ "${LD_PRELOAD_MODE:-clear}" == "clear" ]]; then
+  if [[ "${LD_PRELOAD_MODE:-inherit}" == "clear" ]]; then
     export LD_PRELOAD=""
   fi
 
@@ -2770,8 +2812,9 @@ launch_gamescope_session() {
   echo "  HDR enabled:           ${ENABLE_GAMESCOPE_HDR}"
   echo "  HDR ITM target nits:   ${GAMESCOPE_HDR_NITS}"
   echo "  Force cursor grab:     ${FORCE_GRAB_CURSOR}"
+  echo "  Low-latency/tearing:   ${LOW_LATENCY_TEARING} (KMS-only)"
   echo "  PipeWire debug mode:   ${PIPEWIRE_DEBUG_MODE}"
-  echo "  LD_PRELOAD mode:       ${LD_PRELOAD_MODE:-clear}"
+  echo "  LD_PRELOAD mode:       ${LD_PRELOAD_MODE:-inherit}"
   echo "  Audio switch enabled:  ${AUDIO_SWITCH_ENABLED}"
   if (( AUDIO_SWITCH_ENABLED )); then
     local sink_desc
@@ -2795,6 +2838,7 @@ interactive_new_config() {
   CURRENT_PROFILE=""
   PRE_CMD=""
   POST_CMD=""
+  LD_PRELOAD_MODE="inherit"
   detect_session_mode
 
   # Reset refresh-related fields so new profile does NOT inherit previous rates.
@@ -2932,7 +2976,8 @@ run_from_current_config() {
 
   PIPEWIRE_DEBUG_MODE=${PIPEWIRE_DEBUG_MODE:-2}
   FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
-  LD_PRELOAD_MODE=${LD_PRELOAD_MODE:-clear}
+  LOW_LATENCY_TEARING=${LOW_LATENCY_TEARING:-0}
+  LD_PRELOAD_MODE=${LD_PRELOAD_MODE:-inherit}
   G_FPS_BG=${G_FPS_BG:-0}
   AUDIO_SWITCH_ENABLED=${AUDIO_SWITCH_ENABLED:-0}
   AUDIO_SINK_NAME=${AUDIO_SINK_NAME:-""}
@@ -2971,6 +3016,7 @@ generate_launch_opts() {
     PRE_CMD=""
     POST_CMD=""
     detect_session_mode
+    LD_PRELOAD_MODE="inherit"
     if ! detect_steam_installations; then
       echo "Aborting launch options generator."
       exit 0
