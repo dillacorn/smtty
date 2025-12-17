@@ -2046,6 +2046,12 @@ print_steam_launch_options() {
     args+=(-S stretch)
   fi
 
+  local enable_multi_xwayland=0
+  if (( GAME_W == NATIVE_W && GAME_H == NATIVE_H )) && [[ "$STRETCH_FLAG" != "stretch" ]]; then
+    enable_multi_xwayland=1
+    args+=(--xwayland-count 2)
+  fi
+
   if (( ADAPTIVE_SYNC == 1 )); then
     args+=(--adaptive-sync)
   fi
@@ -2059,6 +2065,9 @@ print_steam_launch_options() {
   fi
 
   local env_prefix=""
+  if (( enable_multi_xwayland )); then
+    env_prefix+="STEAM_MULTIPLE_XWAYLANDS=1 "
+  fi
   if [[ "${PIPEWIRE_DEBUG_MODE:-2}" != "inherit" ]]; then
     env_prefix+="PIPEWIRE_DEBUG=$PIPEWIRE_DEBUG_MODE "
   fi
@@ -2568,6 +2577,12 @@ launch_vanilla_gamescope() {
     args+=(-S stretch)
   fi
 
+  local enable_multi_xwayland=0
+  if (( GAME_W == NATIVE_W && GAME_H == NATIVE_H )) && [[ "$STRETCH_FLAG" != "stretch" ]]; then
+    enable_multi_xwayland=1
+    args+=(--xwayland-count 2)
+  fi
+
   if (( ADAPTIVE_SYNC == 1 )); then
     args+=(--adaptive-sync)
   fi
@@ -2581,6 +2596,9 @@ launch_vanilla_gamescope() {
   fi
 
   echo "Command:"
+  if (( enable_multi_xwayland )); then
+    printf 'STEAM_MULTIPLE_XWAYLANDS=1 '
+  fi
   printf 'gamescope'
   printf ' %q' "${args[@]}"
   printf ' --'
@@ -2604,11 +2622,16 @@ launch_vanilla_gamescope() {
     export PROTON_ENABLE_HDR=1
   fi
 
+  local -a gs_exec=(gamescope)
+  if (( enable_multi_xwayland )); then
+    gs_exec=(env STEAM_MULTIPLE_XWAYLANDS=1 gamescope)
+  fi
+
   if (( FLAG_DETACH )); then
     if command -v setsid >/dev/null 2>&1; then
-      setsid gamescope "${args[@]}" -- "${inner_cmd[@]}" >/dev/null 2>&1 &
+      setsid "${gs_exec[@]}" "${args[@]}" -- "${inner_cmd[@]}" >/dev/null 2>&1 &
     else
-      gamescope "${args[@]}" -- "${inner_cmd[@]}" >/dev/null 2>&1 &
+      "${gs_exec[@]}" "${args[@]}" -- "${inner_cmd[@]}" >/dev/null 2>&1 &
     fi
     local gspid=$!
     audio_switch_start_for_pid "$gspid"
@@ -2633,6 +2656,9 @@ launch_vanilla_gamescope() {
   if command -v script >/dev/null 2>&1; then
     # Build a fully-quoted gamescope command string.
     local cmd_str="gamescope"
+    if (( enable_multi_xwayland )); then
+      cmd_str="env STEAM_MULTIPLE_XWAYLANDS=1 gamescope"
+    fi
     local a
     for a in "${args[@]}"; do
       cmd_str+=" $(printf '%q' "$a")"
@@ -2668,7 +2694,7 @@ launch_vanilla_gamescope() {
     fi
   else
     # No script available, preserve TTY behavior by not piping output.
-    gamescope "${args[@]}" -- "${inner_cmd[@]}" &
+    "${gs_exec[@]}" "${args[@]}" -- "${inner_cmd[@]}" &
     gspid=$!
   fi
 
