@@ -118,6 +118,7 @@ G_FPS_BG=0            # gamescope -o (unfocused refresh, Hz; 0 = disabled / omit
 ADAPTIVE_SYNC=0          # 0/1 -> --adaptive-sync
 ENABLE_GAMESCOPE_HDR=0   # 0/1 -> --hdr-enabled/ITM
 GAMESCOPE_HDR_NITS=1000  # used with --hdr-itm-target-nits
+SMTTY_EDID_HDR_PEAK_NITS=""
 FORCE_GRAB_CURSOR=0      # 0/1 -> --force-grab-cursor
 
 # Low-latency / tearing (advanced; only meaningful in KMS/embedded sessions)
@@ -1140,6 +1141,72 @@ clear_session_state_if_pid_matches() {
 
 # ---------------- output / resolution selection ----------------
 
+# --- HDR EDID nits helpers v4 (smtty) ---
+# Reads HDR static metadata from EDID via edid-decode.
+# Used only to prefill the HDR ITM target nits prompt default.
+# If missing/unavailable, smtty falls back to the saved/default nits value.
+
+smtty_resolve_edid_path() {
+  local conn="${1:?missing connector (e.g. DP-1)}"
+  local p
+  for p in /sys/class/drm/card*-"$conn"/edid; do
+    [[ -r "$p" ]] || continue
+    printf '%s\n' "$p"
+    return 0
+  done
+  return 1
+}
+
+smtty_round_nits() {
+  local v="${1:-}"
+  awk -v v="$v" 'BEGIN{ if (v ~ /^[0-9]+(\.[0-9]+)?$/) printf "%.0f\n", v }'
+}
+
+smtty_get_hdr_peak_nits_for_output() {
+  # Prints peak nits from EDID HDR static metadata, or empty.
+  local conn="${1:?missing connector (e.g. DP-1)}"
+  local edid_path out peak
+
+  command -v edid-decode >/dev/null 2>&1 || return 2
+  edid_path="$(smtty_resolve_edid_path "$conn")" || return 1
+
+  out="$(edid-decode "$edid_path" 2>/dev/null || true)"
+
+  # Prefer the cd/m^2 value shown in parentheses by edid-decode:
+  # "Desired content max luminance: ... (XXX cd/m^2)"
+  peak="$(awk -F'[()]' '/Desired content max luminance:/{
+    if (NF>=2) {
+      x=$2
+      gsub(/[^0-9.]/,"",x)
+      if (x!="") { print x; exit }
+    }
+  }' <<<"$out")"
+
+  # Fallback: if no parentheses, take the last numeric token on the line.
+  if [[ -z "$peak" ]]; then
+    peak="$(awk '/Desired content max luminance:/{
+      for (i=NF; i>=1; i--) {
+        if ($i ~ /^[0-9]+(\.[0-9]+)?$/) { print $i; exit }
+      }
+    }' <<<"$out")"
+  fi
+
+  peak="$(smtty_round_nits "$peak" || true)"
+  [[ -n "$peak" ]] || return 3
+
+  # Reject 0/negative junk.
+  if ! [[ "$peak" =~ ^[0-9]+$ ]]; then
+    return 3
+  fi
+  if (( peak <= 0 )); then
+    return 3
+  fi
+
+  printf '%s\n' "$peak"
+}
+# --- end HDR EDID nits helpers v4 ---
+
+
 detect_max_refresh_for_current_output() {
   # Best-effort detection of the highest refresh rate at the native
   # resolution for the currently selected DRM connector ($DRM_SHORT).
@@ -1329,6 +1396,10 @@ choose_drm_output() {
   local chosen=${entries[choice-1]}
   DRM_SHORT=${chosen%%:*}
   DRM_NATIVE_MODE=${chosen#*:}
+
+  # Detect EDID-reported HDR peak nits for this output (optional; used as HDR prompt default).
+  SMTTY_EDID_HDR_PEAK_NITS=""
+  SMTTY_EDID_HDR_PEAK_NITS="$(smtty_get_hdr_peak_nits_for_output "$DRM_SHORT" 2>/dev/null || true)"
 
   local base=${DRM_NATIVE_MODE%%@*}
   if [[ "$base" =~ ^([0-9]+)x([0-9]+)$ ]]; then
@@ -1559,7 +1630,20 @@ choose_vrr_hdr_and_steamos() {
   if [[ "$hdr" == "1" ]]; then
     ENABLE_GAMESCOPE_HDR=1
     local nits
-    nits=$(read_default "HDR ITM target nits (gamescope --hdr-itm-target-nits)" "$GAMESCOPE_HDR_NITS")
+    local default_nits="$GAMESCOPE_HDR_NITS"
+
+    # Prefer EDID peak nits as the prompt default ONLY when current/saved is the generic 1000.
+    if command -v edid-decode >/dev/null 2>&1; then
+      if [[ -n "${SMTTY_EDID_HDR_PEAK_NITS:-}" ]]; then
+        if [[ -z "${GAMESCOPE_HDR_NITS:-}" || "${GAMESCOPE_HDR_NITS:-}" == "1000" ]]; then
+          default_nits="$SMTTY_EDID_HDR_PEAK_NITS"
+        fi
+      fi
+    else
+      print_warn "edid-decode not found; cannot auto-detect HDR nits from EDID. Install it for per-display defaults."
+    fi
+
+    nits=$(read_default "HDR ITM target nits (gamescope --hdr-itm-target-nits)" "$default_nits")
     if [[ "$nits" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
@@ -2439,6 +2523,7 @@ check_deps() {
   command -v script   >/dev/null 2>&1 || SOFT_MISSING+=("script")
   command -v setsid   >/dev/null 2>&1 || SOFT_MISSING+=("setsid")
 
+  command -v edid-decode >/dev/null 2>&1 || SOFT_MISSING+=("edid-decode")
   if ((${#MISSING_CMDS[@]} > 0)) || (( need_flatpak_steam_app )); then
     print_error "Missing required dependencies:"
     if ((${#MISSING_CMDS[@]} > 0)); then
