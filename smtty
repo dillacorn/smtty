@@ -3319,9 +3319,10 @@ interactive_profile_menu() {
         ;;
       2)
         if select_profile_interactive "use"; then
-          if load_profile_by_name "$CURRENT_PROFILE"; then
-            run_from_current_config
-          fi
+          # Load/switch profile only. Do NOT auto-launch.
+          # This lets the user review the loaded settings, then choose [1] to launch,
+          # or exit and run `smtty -O` to generate launch options for this profile.
+          load_profile_by_name "$CURRENT_PROFILE" || true
         else
           echo "No other profiles available or selection cancelled."
         fi
