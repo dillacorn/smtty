@@ -23,9 +23,9 @@ Start here: [Welcome to "smtty" Discussions](https://github.com/dillacorn/smtty/
 
 I made an issue on this https://github.com/ValveSoftware/gamescope/issues/2042
 
-#### Overlay limitations
+#### Overlay limitations (stretched resolutions)
 
-- `gamescope` runs as a nested Wayland compositor, so **clipboard sharing with your desktop session does not work**. Copy/paste between your desktop and the gamescope session is not possible.
+- When running `gamescope` in a **stretched** resolution (e.g., **4:3 stretched**), **clipboard sharing with your desktop session does not work**. Copy/paste between your desktop and the gamescope session is not possible.
 - For Steam messaging, use a browser on your normal desktop session and open:  
   <https://steamcommunity.com/chat>
 - For convenience, you can create a dedicated Steam Chat launcher. Example `.desktop` file (Firefox profile) in my awtarchy repo:  
