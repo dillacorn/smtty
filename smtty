@@ -72,11 +72,11 @@ print_success() {
 
 # ---------------- Steam command (Gamepad UI) ----------------
 # Optional override:
-#   STEAM_CMD_OVERRIDE='steam -gamepadui -nochatui'
+#   STEAM_CMD_OVERRIDE='steam -gamepadui -steamos3 -steamdeck -nochatui'
 if [[ "${STEAM_CMD_OVERRIDE-}" != "" ]]; then
   read -ra STEAM_CMD_ARR <<<"$STEAM_CMD_OVERRIDE"
 else
-  STEAM_CMD_ARR=(steam -gamepadui)
+  STEAM_CMD_ARR=(steam -gamepadui -steamos3 -steamdeck)
 fi
 
 # Steam installation type (set during detection)
