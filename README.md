@@ -14,8 +14,6 @@ Start here: [Welcome to "smtty" Discussions](https://github.com/dillacorn/smtty/
 
 - **Make sure “Enable GPU accelerated rendering in web views” is enabled in Steam, or Steam notifications can cover the entire screen with a black image when running under gamescope.**
 
-I made an issue on this https://github.com/ValveSoftware/gamescope/issues/2042
-
 #### Overlay limitations
 
 - When running gamescope, clipboard integration with the desktop session is one-way: you can copy from the gamescope session to the desktop, but you cannot copy from the desktop into the gamescope session (no desktop → gamescope paste).
