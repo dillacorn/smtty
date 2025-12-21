@@ -47,6 +47,89 @@
 
 set -euo pipefail
 
+# >>> SMTTY GPU/DRIVER COMPAT (auto-insert) >>>
+# Controls:
+#   SMTTY_FORCE_MULTI_XWAYLAND=1   -> force-enable multi-xwayland knobs
+#   SMTTY_DISABLE_MULTI_XWAYLAND=1 -> force-disable multi-xwayland knobs
+#   SMTTY_DISABLE_NVIDIA_FIXUPS=1  -> do not apply NVIDIA env fixups
+#
+# Rationale:
+# - Intel/unknown stacks are more likely to hit edge cases with multiple Xwaylands.
+# - AMD default behavior remains unchanged.
+# - NVIDIA fixups are only applied when proprietary driver is detected and vars are unset.
+
+smtty_detect_gpu_vendor() {
+  # returns: amd|nvidia|intel|unknown
+  local l
+  if command -v lspci >/dev/null 2>&1; then
+    l="$(lspci -nn | grep -Eiq '(VGA|3D|Display)' && lspci -nn | grep -Ei '(VGA|3D|Display)' || true)"
+  else
+    l=""
+  fi
+
+  # Prefer PCI vendor IDs when present.
+  # AMD:    1002
+  # NVIDIA: 10de
+  # Intel:  8086
+  if echo "$l" | grep -Eiq '\[1002:'; then
+    echo "amd"
+  elif echo "$l" | grep -Eiq '\[10de:'; then
+    echo "nvidia"
+  elif echo "$l" | grep -Eiq '\[8086:'; then
+    echo "intel"
+  else
+    # Fallback name match.
+    if echo "$l" | grep -Eiq 'AMD|Radeon'; then
+      echo "amd"
+    elif echo "$l" | grep -Eiq 'NVIDIA|GeForce|Quadro'; then
+      echo "nvidia"
+    elif echo "$l" | grep -Eiq 'Intel'; then
+      echo "intel"
+    else
+      echo "unknown"
+    fi
+  fi
+}
+
+smtty_has_nvidia_proprietary() {
+  # Best-effort detection; nouveau systems should return false here.
+  if [[ -e /proc/driver/nvidia/version ]]; then
+    return 0
+  fi
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+# Compute once.
+SMTTY_GPU_VENDOR="${SMTTY_GPU_VENDOR:-$(smtty_detect_gpu_vendor)}"
+
+# Default: allow multi-xwayland everywhere except Intel/unknown.
+SMTTY_MULTI_XWAYLAND_OK=1
+case "$SMTTY_GPU_VENDOR" in
+  intel|unknown) SMTTY_MULTI_XWAYLAND_OK=0 ;;
+esac
+
+# User overrides.
+if [[ "${SMTTY_FORCE_MULTI_XWAYLAND:-0}" == "1" ]]; then
+  SMTTY_MULTI_XWAYLAND_OK=1
+fi
+if [[ "${SMTTY_DISABLE_MULTI_XWAYLAND:-0}" == "1" ]]; then
+  SMTTY_MULTI_XWAYLAND_OK=0
+fi
+
+# Minimal NVIDIA env fixups (only if unset), gated to proprietary.
+if [[ "$SMTTY_GPU_VENDOR" == "nvidia" ]] && smtty_has_nvidia_proprietary && [[ "${SMTTY_DISABLE_NVIDIA_FIXUPS:-0}" != "1" ]]; then
+  : "${__GLX_VENDOR_LIBRARY_NAME:=nvidia}"
+  export __GLX_VENDOR_LIBRARY_NAME
+
+  : "${GBM_BACKEND:=nvidia-drm}"
+  export GBM_BACKEND
+fi
+# <<< SMTTY GPU/DRIVER COMPAT (auto-insert) <<<
+
+
 # ---------------- colors / logging ----------------
 RED=$'\033[0;31m'
 YELLOW=$'\033[1;33m'
@@ -2177,7 +2260,9 @@ print_steam_launch_options() {
   local enable_multi_xwayland=0
   if (( GAME_W == NATIVE_W && GAME_H == NATIVE_H )) && [[ "$STRETCH_FLAG" != "stretch" ]]; then
     enable_multi_xwayland=1
-    args+=(--xwayland-count 2)
+    if (( SMTTY_MULTI_XWAYLAND_OK )); then  # smtty gpu compat
+      args+=(--xwayland-count 2)
+    fi
   fi
 
   if (( ADAPTIVE_SYNC == 1 )); then
@@ -2194,7 +2279,9 @@ print_steam_launch_options() {
 
   local env_prefix=""
   if (( enable_multi_xwayland )); then
-    env_prefix+="STEAM_MULTIPLE_XWAYLANDS=1 "
+    if (( SMTTY_MULTI_XWAYLAND_OK )); then  # smtty gpu compat
+      env_prefix+="STEAM_MULTIPLE_XWAYLANDS=1 "
+    fi
   fi
   if (( LOW_LATENCY_TEARING == 1 )) && [[ "$SESSION_MODE" == "kms" ]]; then
     env_prefix+="STEAM_GAMESCOPE_TEARING_SUPPORTED=1 STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1 GAMESCOPE_ALLOW_TEARING=1 "
@@ -2324,7 +2411,9 @@ launch_gamescope_payload() {
   local enable_multi_xwayland=0
   if (( GAME_W == NATIVE_W && GAME_H == NATIVE_H )) && [[ "$STRETCH_FLAG" != "stretch" ]]; then
     enable_multi_xwayland=1
-    args+=(--xwayland-count 2)
+    if (( SMTTY_MULTI_XWAYLAND_OK )); then  # smtty gpu compat
+      args+=(--xwayland-count 2)
+    fi
   fi
 
   if (( ADAPTIVE_SYNC == 1 )); then
@@ -2363,7 +2452,9 @@ launch_gamescope_payload() {
 
   local -a gs_exec=(gamescope)
   if (( enable_multi_xwayland )); then
-    gs_exec=(env STEAM_MULTIPLE_XWAYLANDS=1 gamescope)
+    if (( SMTTY_MULTI_XWAYLAND_OK )); then  # smtty gpu compat
+      gs_exec=(env STEAM_MULTIPLE_XWAYLANDS=1 gamescope)
+    fi
   fi
 
   echo "PIPE mode command:"
@@ -3111,7 +3202,9 @@ launch_vanilla_gamescope() {
   local enable_multi_xwayland=0
   if (( GAME_W == NATIVE_W && GAME_H == NATIVE_H )) && [[ "$STRETCH_FLAG" != "stretch" ]]; then
     enable_multi_xwayland=1
-    args+=(--xwayland-count 2)
+    if (( SMTTY_MULTI_XWAYLAND_OK )); then  # smtty gpu compat
+      args+=(--xwayland-count 2)
+    fi
   fi
 
   if (( ADAPTIVE_SYNC == 1 )); then
@@ -3163,7 +3256,9 @@ launch_vanilla_gamescope() {
 
   local -a gs_exec=(gamescope)
   if (( enable_multi_xwayland )); then
-    gs_exec=(env STEAM_MULTIPLE_XWAYLANDS=1 gamescope)
+    if (( SMTTY_MULTI_XWAYLAND_OK )); then  # smtty gpu compat
+      gs_exec=(env STEAM_MULTIPLE_XWAYLANDS=1 gamescope)
+    fi
   fi
 
   if (( FLAG_DETACH )); then
@@ -3196,7 +3291,9 @@ launch_vanilla_gamescope() {
     # Build a fully-quoted gamescope command string.
     local cmd_str="gamescope"
     if (( enable_multi_xwayland )); then
-      cmd_str="env STEAM_MULTIPLE_XWAYLANDS=1 gamescope"
+      if (( SMTTY_MULTI_XWAYLAND_OK )); then  # smtty gpu compat
+        cmd_str="env STEAM_MULTIPLE_XWAYLANDS=1 gamescope"
+      fi
     fi
     local a
     for a in "${args[@]}"; do
