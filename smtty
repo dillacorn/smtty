@@ -943,7 +943,6 @@ print_config_summary() {
   echo "$config_label:"
 
   print_profile_line "Steam type:"               "${STEAM_TYPE:-native}"
-  print_profile_line "Steam launch mode:"        "${STEAM_LAUNCH_MODE:-gamepad}"
   print_profile_line "Output:"                   "$DRM_SHORT"
   print_profile_line "Native mode:"              "$DRM_NATIVE_MODE"              "(-W <width> -H <height>)"
   print_profile_line "Game resolution:"          "${GAME_W}x${GAME_H}"            "(-w <width> -h <height>)"
@@ -3835,6 +3834,17 @@ interactive_profile_menu() {
     detect_session_mode
     init_default_refresh_for_output
     print_config_summary
+    if (( HAVE_CONFIG == 1 )); then
+      local prof="${CURRENT_PROFILE:-}"
+      [[ -z "$prof" ]] && prof="default"
+      echo
+      echo "Tip: Desktop Steam Launch Options for this profile:"
+      if [[ "${STEAM_TYPE:-native}" == "flatpak" ]]; then
+        echo "  flatpak-spawn --host smtty -c ${prof} -P -- %command%"
+      else
+        echo "  smtty -c ${prof} -P -- %command%"
+      fi
+    fi
     echo
     echo "Options:"
     echo "  [1] Use this profile"
