@@ -14,13 +14,6 @@ Start here: [Welcome to "smtty" Discussions](https://github.com/dillacorn/smtty/
 
 - **Make sure “Enable GPU accelerated rendering in web views” is enabled in Steam, or Steam notifications can cover the entire screen with a black image when running under gamescope.**
 
-#### Steam Big Picture overlay cursor quirk (stretched resolutions only)
-
-* This issue only shows up when running a **stretched/custom aspect** session (4:3, 16:10, etc.), not native 1:1 inner=outer sessions.
-* On my setup, the game only consistently re-grabs **raw mouse input** if the mouse is **moving while I close the Steam Big Picture overlay**.
-* If I close the overlay with the mouse perfectly still, the game often fails to re-grab the cursor and the **camera/aim can feel stuck or pinned to an edge**.
-* Current workaround: **jiggle the mouse while opening and closing the Steam Big Picture overlay** so the game can re-grab the cursor.
-
 I made an issue on this https://github.com/ValveSoftware/gamescope/issues/2042
 
 #### Overlay limitations
