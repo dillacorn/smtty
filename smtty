@@ -82,6 +82,11 @@ fi
 # Steam installation type (set during detection)
 STEAM_TYPE=""  # "native" or "flatpak"
 
+# Steam launch mode per profile:
+#   gamepad = Steam Gamepad UI inside gamescope
+#   pipe    = Desktop Steam outside gamescope; run games in gamescope via smtty -PIPE
+STEAM_LAUNCH_MODE="gamepad"
+
 # Session mode: "kms" (bare VT) or "nested" (X11/Wayland compositor)
 SESSION_MODE="kms"
 
@@ -159,6 +164,7 @@ FLAG_KILL=0
 FLAG_DETACH=0
 FLAG_LAUNCH_OPTS=0    # -O: generate Steam launch options
 FLAG_KILL_STEAM=0     # -S: kill Steam client before launching (no prompt)
+FLAG_PIPE=0          # -P/-PIPE: run a single game command in gamescope (Steam Launch Options wrapper)
 FLAG_LIST_PROFILES=0  # -L: list available profiles
 FLAG_DELETE_PROFILE=0 # -D: delete a profile
 SELECTED_PROFILE=""   # -c <profile>: use specific profile
@@ -476,6 +482,9 @@ Options:
             Use 'smtty -k' to ensure POST_CMD runs.
   -S        Kill any running Steam client before launching gamescope (no prompt).
   -O        Interactively generate ready-to-paste Steam per-game launch options and exit.
+  -P        PIPE mode: run one game command in gamescope using the selected profile.
+            Launch Options (native Steam):  smtty -c <profile> -PIPE -- %command%
+            Launch Options (Steam Flatpak): flatpak-spawn --host smtty -c <profile> -PIPE -- %command%
 
 Environment:
   STEAM_CMD_OVERRIDE='steam -gamepadui'
@@ -851,6 +860,7 @@ print_config_summary() {
   echo "$config_label:"
 
   print_profile_line "Steam type:"               "${STEAM_TYPE:-native}"
+  print_profile_line "Steam launch mode:"        "${STEAM_LAUNCH_MODE:-gamepad}"
   print_profile_line "Output:"                   "$DRM_SHORT"
   print_profile_line "Native mode:"              "$DRM_NATIVE_MODE"              "(-W <width> -H <height>)"
   print_profile_line "Game resolution:"          "${GAME_W}x${GAME_H}"            "(-w <width> -h <height>)"
@@ -904,6 +914,7 @@ STRETCH_FLAG=$STRETCH_FLAG
 G_FPS=$G_FPS
 G_FPS_BG=$G_FPS_BG
 STEAM_TYPE=$STEAM_TYPE
+STEAM_LAUNCH_MODE=$STEAM_LAUNCH_MODE
 ADAPTIVE_SYNC=$ADAPTIVE_SYNC
 ENABLE_GAMESCOPE_HDR=$ENABLE_GAMESCOPE_HDR
 GAMESCOPE_HDR_NITS=$GAMESCOPE_HDR_NITS
@@ -938,6 +949,8 @@ load_profile_file() {
   . "$profile_path"
   HAVE_CONFIG=1
 
+
+  STEAM_LAUNCH_MODE=${STEAM_LAUNCH_MODE:-gamepad}
   PIPEWIRE_DEBUG_MODE=${PIPEWIRE_DEBUG_MODE:-2}
   FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
   LOW_LATENCY_TEARING=${LOW_LATENCY_TEARING:-0}
@@ -2225,13 +2238,210 @@ print_steam_launch_options() {
   echo "Paste the above line into this game's Steam \"Launch Options\"."
 }
 
+# ---------------- Steam launch mode (Gamepad UI vs Desktop + PIPE) ----------------
+
+choose_steam_launch_mode() {
+  # No interactive prompt.
+  # Profiles default to Steam Gamepad UI (Big Picture) inside gamescope.
+  # Desktop Steam + per-game gamescope is still supported via -P/-PIPE:
+  #   smtty -c <profile> -P -- %command%
+  STEAM_LAUNCH_MODE="gamepad"
+  return 0
+}
+
+
+print_pipe_instructions() {
+  local prof="${CURRENT_PROFILE:-}"
+  [[ -z "$prof" ]] && prof="default"
+
+  echo
+  echo "Desktop Steam + PIPE mode selected."
+  echo "Set this game's Steam Launch Options to:"
+  if [[ "${STEAM_TYPE:-native}" == "flatpak" ]]; then
+    echo "  flatpak-spawn --host smtty -c ${prof} -PIPE -- %command%"
+  else
+    echo "  smtty -c ${prof} -PIPE -- %command%"
+  fi
+  echo
+  echo "Notes:"
+  echo "  - Steam stays outside gamescope; only the game runs in gamescope."
+  echo "  - In PIPE mode, Steam overlay behavior can vary per game/setup."
+  echo
+}
+
+print_pipe_launch_options() {
+  if (( HAVE_CONFIG == 0 )); then
+    echo "No saved config loaded. Run: smtty -n"
+    exit 1
+  fi
+
+  local prof="${CURRENT_PROFILE:-}"
+  [[ -z "$prof" ]] && prof="default"
+
+  echo "Generated Steam launch options (PIPE mode):"
+  echo
+  if [[ "${STEAM_TYPE:-native}" == "flatpak" ]]; then
+    echo "flatpak-spawn --host smtty -c ${prof} -PIPE -- %command%"
+  else
+    echo "smtty -c ${prof} -PIPE -- %command%"
+  fi
+  echo
+}
+
+launch_gamescope_payload() {
+  # Wrap the provided command in gamescope using the currently loaded profile settings.
+  local -a inner_cmd=("$@")
+
+  local args=()
+  args+=(-f)
+
+  # Optional: enable gamescope Steam integration (-e) in PIPE mode
+  # Export before running Steam launch options if you want it:
+  #   SMTTY_PIPE_STEAM_INTEGRATION=1
+  if [[ "${SMTTY_PIPE_STEAM_INTEGRATION:-0}" == "1" ]]; then
+    args+=(-e)
+  fi
+
+  args+=(-W "$NATIVE_W" -H "$NATIVE_H")
+  args+=(-w "$GAME_W" -h "$GAME_H")
+
+  if [[ "$SESSION_MODE" == "kms" && -n "$DRM_SHORT" ]]; then
+    args+=(-O "$DRM_SHORT")
+  fi
+
+  if (( G_FPS > 0 )); then
+    args+=(-r "$G_FPS")
+  fi
+
+  if (( G_FPS_BG > 0 )); then
+    args+=(-o "$G_FPS_BG")
+  fi
+
+  if [[ "$STRETCH_FLAG" == "stretch" ]]; then
+    args+=(-S stretch)
+  fi
+
+  local enable_multi_xwayland=0
+  if (( GAME_W == NATIVE_W && GAME_H == NATIVE_H )) && [[ "$STRETCH_FLAG" != "stretch" ]]; then
+    enable_multi_xwayland=1
+    args+=(--xwayland-count 2)
+  fi
+
+  if (( ADAPTIVE_SYNC == 1 )); then
+    args+=(--adaptive-sync)
+  fi
+
+  if (( ENABLE_GAMESCOPE_HDR == 1 )); then
+    args+=(--hdr-enabled --hdr-itm-enable --hdr-itm-target-nits "$GAMESCOPE_HDR_NITS")
+  fi
+
+  if (( FORCE_GRAB_CURSOR == 1 )); then
+    args+=(--force-grab-cursor)
+  fi
+
+  maybe_set_flatpak_nvidia_gbm_env
+  run_pre_hook
+
+  if (( LOW_LATENCY_TEARING == 1 )) && [[ "$SESSION_MODE" == "kms" ]]; then
+    export STEAM_GAMESCOPE_TEARING_SUPPORTED=1
+    export STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1
+    export GAMESCOPE_ALLOW_TEARING=1
+  fi
+
+  if [[ "${PIPEWIRE_DEBUG_MODE:-2}" != "inherit" ]]; then
+    export PIPEWIRE_DEBUG="$PIPEWIRE_DEBUG_MODE"
+  fi
+
+  if [[ "${LD_PRELOAD_MODE:-inherit}" == "clear" ]]; then
+    export LD_PRELOAD=""
+  fi
+
+  if (( ENABLE_GAMESCOPE_HDR == 1 )) && [[ -n "${WAYLAND_DISPLAY-}" ]]; then
+    export PROTON_ENABLE_WAYLAND=1
+    export PROTON_ENABLE_HDR=1
+  fi
+
+  local -a gs_exec=(gamescope)
+  if (( enable_multi_xwayland )); then
+    gs_exec=(env STEAM_MULTIPLE_XWAYLANDS=1 gamescope)
+  fi
+
+  echo "PIPE mode command:"
+  if (( enable_multi_xwayland )); then
+    printf '%s' 'STEAM_MULTIPLE_XWAYLANDS=1 '
+  fi
+  if (( LOW_LATENCY_TEARING == 1 )) && [[ "$SESSION_MODE" == "kms" ]]; then
+    printf '%s' 'STEAM_GAMESCOPE_TEARING_SUPPORTED=1 STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1 GAMESCOPE_ALLOW_TEARING=1 '
+  fi
+  printf '%s' 'gamescope'
+  printf ' %q' "${args[@]}"
+  printf ' --'
+  printf ' %q' "${inner_cmd[@]}"
+  printf '\n\n'
+
+  local gspid=0
+  local gs_status=0
+
+  trap 'if [[ "$gspid" =~ ^[0-9]+$ ]] && (( gspid > 0 )); then kill -TERM "$gspid" 2>/dev/null || true; fi' INT TERM
+
+  "${gs_exec[@]}" "${args[@]}" -- "${inner_cmd[@]}" &
+  gspid=$!
+
+  write_session_state "$gspid"
+  audio_switch_start_for_pid "$gspid"
+
+  if ! wait "$gspid"; then
+    gs_status=$?
+  fi
+
+  trap - INT TERM
+
+  on_gamescope_exit "$gspid"
+  return "$gs_status"
+}
+
+run_pipe_mode() {
+  # Usage from Steam Launch Options:
+  #   smtty -c <profile> -PIPE -- %command%
+  # Steam Flatpak:
+  #   flatpak-spawn --host smtty -c <profile> -PIPE -- %command%
+
+  if (( HAVE_CONFIG == 0 )); then
+    print_error "PIPE mode requires a loaded profile. Use: smtty -c <profile> -PIPE -- %command%"
+    return 1
+  fi
+
+  detect_session_mode
+  init_default_refresh_for_output
+  check_deps
+
+  if [[ "${1-}" == "--" ]]; then
+    shift || true
+  fi
+
+  if (( $# < 1 )); then
+    print_error "PIPE mode requires a command. Use: smtty -PIPE -- %command%"
+    return 2
+  fi
+
+  # Do NOT kill/stop Steam in PIPE mode.
+  launch_gamescope_payload "$@"
+}
+
+
 # ---------------- Steam installation detection ----------------
 detect_steam_installations() {
   local available=()
   local have_native=0
   local have_flatpak=0
 
-  if command -v steam >/dev/null 2>&1; then
+  local df=""
+  df="$(smtty_find_steam_desktop_file 2>/dev/null || true)"
+
+  if [[ -n "$df" ]]; then
+    available+=("Native Steam (steam.desktop)")
+    have_native=1
+  elif command -v steam >/dev/null 2>&1; then
     available+=("Native Steam (steam)")
     have_native=1
   fi
@@ -2280,6 +2490,70 @@ detect_steam_installations() {
   return 0
 }
 
+
+# smtty-patch: native steam.desktop launcher
+# Prefer launching native Steam via steam.desktop Exec= when available.
+SMTTY_NATIVE_STEAM_ARR=()
+
+smtty_find_steam_desktop_file() {
+  local p
+  for p in "$HOME/.local/share/applications/steam.desktop" "/usr/share/applications/steam.desktop"; do
+    if [[ -r "$p" ]]; then
+      printf "%s\n" "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+smtty_read_desktop_exec() {
+  local f="${1:?missing .desktop path}"
+  awk '
+    BEGIN{in=0}
+    /^\[Desktop Entry\]/{in=1;next}
+    /^\[/{if(in) exit}
+    in && /^Exec=/{sub(/^Exec=/,""); print; exit}
+  ' "$f"
+}
+
+smtty_strip_desktop_field_codes() {
+  # Remove Desktop Entry field codes: %U %u %F %f %i %c %k etc.
+  # Keep literal %% intact.
+  sed -E 's/[[:space:]]+%[a-zA-Z]//g; s/%[a-zA-Z]//g'
+}
+
+smtty_native_steam_cmd_arr() {
+  # Sets SMTTY_NATIVE_STEAM_ARR to the base Steam command (no -gamepadui appended).
+  SMTTY_NATIVE_STEAM_ARR=()
+
+  local df exec
+  df="$(smtty_find_steam_desktop_file 2>/dev/null || true)"
+  if [[ -n "$df" ]]; then
+    exec="$(smtty_read_desktop_exec "$df" 2>/dev/null || true)"
+    if [[ -z "$exec" ]]; then
+      return 1
+    fi
+    exec="$(printf "%s" "$exec" | smtty_strip_desktop_field_codes)"
+    exec="${exec# }"
+    exec="${exec% }"
+    if [[ -z "$exec" ]]; then
+      return 1
+    fi
+    read -r -a SMTTY_NATIVE_STEAM_ARR <<<"$exec"
+    if (( ${#SMTTY_NATIVE_STEAM_ARR[@]} == 0 )); then
+      return 1
+    fi
+    return 0
+  fi
+
+  if command -v steam >/dev/null 2>&1; then
+    SMTTY_NATIVE_STEAM_ARR=(steam)
+    return 0
+  fi
+
+  return 1
+}
+
 configure_steam_command() {
   if [[ -n "${STEAM_CMD_OVERRIDE-}" ]]; then
     return
@@ -2287,9 +2561,21 @@ configure_steam_command() {
 
   if [[ "$STEAM_TYPE" == "flatpak" ]]; then
     STEAM_CMD_ARR=(flatpak run com.valvesoftware.Steam -gamepadui)
-  else
-    STEAM_CMD_ARR=(steam -gamepadui)
+    return
   fi
+
+  # Native Steam: prefer steam.desktop Exec=, fall back to steam in PATH.
+  if smtty_native_steam_cmd_arr; then
+    STEAM_CMD_ARR=("${SMTTY_NATIVE_STEAM_ARR[@]}")
+  else
+    STEAM_CMD_ARR=(steam)
+  fi
+
+  # Ensure -gamepadui is present for the in-gamescope Steam session.
+  case " ${STEAM_CMD_ARR[*]} " in
+    *" -gamepadui "*) ;;
+    *) STEAM_CMD_ARR+=(-gamepadui) ;;
+  esac
 }
 
 require_cmd() {
@@ -2514,6 +2800,20 @@ check_deps() {
     fi
   else
     require_cmd steam
+
+  # smtty-patch: native steam.desktop launcher (deps)
+  # If `steam` is not in PATH but steam.desktop exists, do not hard-fail deps.
+  if [[ "$STEAM_TYPE" != "flatpak" ]] && ! command -v steam >/dev/null 2>&1; then
+    if smtty_find_steam_desktop_file >/dev/null 2>&1; then
+      local _filtered=()
+      local _c
+      for _c in "${MISSING_CMDS[@]}"; do
+        [[ "$_c" == "steam" ]] || _filtered+=("$_c")
+      done
+      MISSING_CMDS=("${_filtered[@]}")
+    fi
+  fi
+
   fi
 
   # Soft deps (feature degradation only).
@@ -2565,13 +2865,124 @@ steam_is_running() {
   pgrep -x steam >/dev/null 2>&1
 }
 
+# smtty-patch: desktop Steam launcher for PIPE mode
+smtty_spawn_detached() {
+  # usage: smtty_spawn_detached <cmd...>
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" >/dev/null 2>&1 < /dev/null &
+  else
+    nohup "$@" >/dev/null 2>&1 < /dev/null &
+  fi
+  disown 2>/dev/null || true
+}
+
+desktop_steam_is_running() {
+  # Detect either native steam or Flatpak Steam.
+  pgrep -x steam >/dev/null 2>&1 && return 0
+  pgrep -f 'com\.valvesoftware\.Steam' >/dev/null 2>&1 && return 0
+  return 1
+}
+
+smtty_find_native_steam_desktop_file() {
+  if [[ -f "$HOME/.local/share/applications/steam.desktop" ]]; then
+    printf '%s\n' "$HOME/.local/share/applications/steam.desktop"
+    return 0
+  fi
+  if [[ -f "/usr/share/applications/steam.desktop" ]]; then
+    printf '%s\n' "/usr/share/applications/steam.desktop"
+    return 0
+  fi
+  return 1
+}
+
+smtty_launch_desktop_steam_native() {
+  local df=""
+  df="$(smtty_find_native_steam_desktop_file 2>/dev/null || true)"
+
+  # Prefer gtk-launch with the desktop id.
+  if [[ -n "$df" ]] && command -v gtk-launch >/dev/null 2>&1; then
+    local id="${df##*/}"
+    id="${id%.desktop}"
+    smtty_spawn_detached gtk-launch "$id"
+    return 0
+  fi
+
+  # Fallback: parse Exec= and run it.
+  if [[ -n "$df" ]] && [[ -r "$df" ]]; then
+    local exec_line=""
+    exec_line="$(awk -F'=' 'BEGIN{IGNORECASE=1} $1=="Exec"{print substr($0,index($0,"=")+1); exit}' "$df" 2>/dev/null || true)"
+    if [[ -n "$exec_line" ]]; then
+      # Strip desktop field codes.
+      exec_line="${exec_line//%%/%}"
+      for code in %u %U %f %F %i %c %k; do
+        exec_line="${exec_line//$code/}"
+      done
+      # Trim leading/trailing spaces.
+      exec_line="${exec_line#"${exec_line%%[![:space:]]*}"}"
+      exec_line="${exec_line%"${exec_line##*[![:space:]]}"}"
+      if [[ -n "$exec_line" ]]; then
+        smtty_spawn_detached bash -lc "$exec_line"
+        return 0
+      fi
+    fi
+  fi
+
+  # Last fallback: run steam directly.
+  if command -v steam >/dev/null 2>&1; then
+    smtty_spawn_detached steam
+    return 0
+  fi
+
+  # Extra fallback: steam URI.
+  if command -v xdg-open >/dev/null 2>&1; then
+    smtty_spawn_detached xdg-open "steam://open/main"
+    return 0
+  fi
+
+  return 1
+}
+
+smtty_launch_desktop_steam_flatpak() {
+  if command -v flatpak >/dev/null 2>&1; then
+    smtty_spawn_detached flatpak run com.valvesoftware.Steam
+    return 0
+  fi
+  return 1
+}
+
+launch_desktop_steam_if_needed() {
+  # Only intended for STEAM_LAUNCH_MODE=pipe.
+  desktop_steam_is_running && return 0
+
+  print_info "Launching desktop Steam (outside gamescope)..."
+
+  if [[ "${STEAM_TYPE:-native}" == "flatpak" ]]; then
+    smtty_launch_desktop_steam_flatpak && return 0
+  else
+    smtty_launch_desktop_steam_native && return 0
+  fi
+
+  print_warn "Could not auto-launch desktop Steam. Start Steam manually, then use PIPE Launch Options."
+  return 1
+}
+# end smtty-patch: desktop Steam launcher for PIPE mode
+
 request_steam_shutdown() {
-  # Try native first; if that fails and Flatpak exists, try Flatpak.
+  # Try native Steam first; fall back to Flatpak if present.
+
   if command -v steam >/dev/null 2>&1; then
     if steam -shutdown >/dev/null 2>&1; then
       return 0
     fi
   fi
+
+  # Native fallback: steam.desktop Exec=
+  if smtty_native_steam_cmd_arr; then
+    if "${SMTTY_NATIVE_STEAM_ARR[@]}" -shutdown >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
   if command -v flatpak >/dev/null 2>&1; then
     if flatpak list --app 2>/dev/null | grep -q "com.valvesoftware.Steam"; then
       if flatpak run com.valvesoftware.Steam -shutdown >/dev/null 2>&1; then
@@ -2579,6 +2990,7 @@ request_steam_shutdown() {
       fi
     fi
   fi
+
   return 1
 }
 
@@ -2942,6 +3354,14 @@ interactive_new_config() {
           echo "Aborting interactive setup."
           exit 0
         fi
+        if ! choose_steam_launch_mode; then
+          if (( from_menu )); then
+            echo "Returning to main menu."
+            return 1
+          fi
+          echo "Aborting interactive setup."
+          exit 0
+        fi
         step=2
         ;;
       2)
@@ -3037,9 +3457,13 @@ interactive_new_config() {
           step=$((step - 1))
           continue
         fi
-        handle_running_steam_before_launch
-        launch_gamescope_session
+
+        # After saving a new profile, return to the main menu so the user can
+        # review the settings and choose [1] to launch.
+        load_profile_by_name "$CURRENT_PROFILE" >/dev/null 2>&1 || HAVE_CONFIG=1
+        return 0
         ;;
+
       *)
         return 0
         ;;
@@ -3092,6 +3516,12 @@ run_from_current_config() {
 
   init_default_refresh_for_output
 
+  if [[ "${STEAM_LAUNCH_MODE:-gamepad}" == "pipe" ]]; then
+    launch_desktop_steam_if_needed || true
+    print_pipe_instructions
+    return 0
+  fi
+
   handle_running_steam_before_launch
   launch_gamescope_session
 }
@@ -3103,6 +3533,10 @@ generate_launch_opts() {
     detect_session_mode
     LD_PRELOAD_MODE="inherit"
     if ! detect_steam_installations; then
+      echo "Aborting launch options generator."
+      exit 0
+    fi
+    if ! choose_steam_launch_mode; then
       echo "Aborting launch options generator."
       exit 0
     fi
@@ -3144,7 +3578,11 @@ generate_launch_opts() {
 
   init_default_refresh_for_output
 
-  print_steam_launch_options
+  if [[ "${STEAM_LAUNCH_MODE:-gamepad}" == "pipe" ]]; then
+    print_pipe_launch_options
+  else
+    print_steam_launch_options
+  fi
   exit 0
 }
 
@@ -3332,8 +3770,9 @@ interactive_profile_menu() {
         if ! interactive_new_config 1; then
           continue
         fi
-        return 0
+        continue
         ;;
+
       4)
         if select_profile_interactive "delete"; then
           delete_profile "$CURRENT_PROFILE" || true
@@ -3369,7 +3808,20 @@ fi
 
 cleanup_old_session_artifacts
 
-while getopts ":hnlpkdOSc:LD:" opt; do
+# Support literal -PIPE token (Steam Launch Options convenience)
+if (( $# > 0 )); then
+  _argv=()
+  for _a in "$@"; do
+    if [[ "$_a" == "-PIPE" ]]; then
+      _argv+=("-P")
+    else
+      _argv+=("$_a")
+    fi
+  done
+  set -- "${_argv[@]}"
+fi
+
+while getopts ":hnlpkdOPSc:LD:" opt; do
   case "$opt" in
     h) FLAG_HELP=1 ;;
     n) FLAG_NEW=1 ;;
@@ -3378,6 +3830,7 @@ while getopts ":hnlpkdOSc:LD:" opt; do
     k) FLAG_KILL=1 ;;
     d) FLAG_DETACH=1 ;;
     O) FLAG_LAUNCH_OPTS=1 ;;
+    P) FLAG_PIPE=1 ;;
     S) FLAG_KILL_STEAM=1 ;;
     c) SELECTED_PROFILE="$OPTARG" ;;
     L) FLAG_LIST_PROFILES=1 ;;
@@ -3414,6 +3867,11 @@ else
   load_config_default
 fi
 
+if (( FLAG_PIPE )); then
+  run_pipe_mode "$@"
+  exit $?
+fi
+
 if (( FLAG_KILL )); then
   kill_gamescope
   exit 0
@@ -3441,24 +3899,33 @@ fi
 if (( FLAG_LAST )); then
   if (( HAVE_CONFIG == 0 )); then
     echo "No saved config; doing new interactive setup."
-    interactive_new_config 0
+    if interactive_new_config 0; then
+      interactive_profile_menu
+    fi
     exit 0
   fi
   run_from_current_config
 fi
 
+
 if (( FLAG_NEW )); then
-  interactive_new_config 0
+  if interactive_new_config 0; then
+    interactive_profile_menu
+  fi
   exit 0
 fi
+
 
 if (( HAVE_CONFIG == 0 )); then
   if select_profile_interactive "use"; then
     load_profile_by_name "$CURRENT_PROFILE" || true
   else
-    interactive_new_config 0
+    if interactive_new_config 0; then
+      interactive_profile_menu
+    fi
     exit 0
   fi
 fi
+
 
 interactive_profile_menu
