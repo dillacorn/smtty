@@ -426,6 +426,144 @@ start_desktop_steam_spawn_watcher() {
   echo $!
 }
 
+# --- Steam installed game picker (auto-launch via -applaunch) -----------------
+SMTTY_APPLAUNCH_APPID="${SMTTY_APPLAUNCH_APPID:-}"
+SMTTY_APPLAUNCH_NAME="${SMTTY_APPLAUNCH_NAME:-}"
+
+detect_steam_root() {
+  # Prefer native Steam root, then Flatpak.
+  local cand
+  for cand in \
+    "${HOME}/.local/share/Steam" \
+    "${HOME}/.steam/steam" \
+    "${HOME}/.steam/root" \
+    "${HOME}/.var/app/com.valvesoftware.Steam/.local/share/Steam"
+  do
+    if [[ -d "$cand/steamapps" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+list_installed_steam_games() {
+  # list_installed_steam_games <steam_root>
+  # prints TSV: name<TAB>appid (sorted)
+  local root="${1:-}"
+  [[ -n "$root" ]] || return 1
+
+  python3 - "$root" <<'PY2'
+import glob
+import os
+import re
+import sys
+
+root = sys.argv[1]
+
+def unescape_path(s: str) -> str:
+    return s.replace(r"\\", "\\")
+
+libs = []
+libs.append(root)
+
+vdf = os.path.join(root, "steamapps", "libraryfolders.vdf")
+if os.path.isfile(vdf):
+    try:
+        data = open(vdf, "r", encoding="utf-8", errors="replace").read()
+    except Exception:
+        data = ""
+    for m in re.finditer(r'"path"\s*"([^"]+)"', data):
+        p = unescape_path(m.group(1))
+        if p:
+            libs.append(p)
+
+# Dedup + only libs with steamapps
+seen = set()
+lib_paths = []
+for p in libs:
+    p = os.path.normpath(p)
+    if p in seen:
+        continue
+    seen.add(p)
+    if os.path.isdir(os.path.join(p, "steamapps")):
+        lib_paths.append(p)
+
+games = []
+for lib in lib_paths:
+    for mf in glob.glob(os.path.join(lib, "steamapps", "appmanifest_*.acf")):
+        appid = os.path.basename(mf).split("_", 1)[-1].split(".", 1)[0]
+        name = None
+        try:
+            txt = open(mf, "r", encoding="utf-8", errors="replace").read()
+        except Exception:
+            continue
+        m = re.search(r'^\s*"name"\s*"([^"]*)"\s*$', txt, flags=re.MULTILINE)
+        if m:
+            name = m.group(1)
+        else:
+            m = re.search(r'"name"\s*"([^"]*)"', txt)
+            if m:
+                name = m.group(1)
+        if name and appid.isdigit():
+            games.append((name, appid))
+
+games.sort(key=lambda t: (t[0].lower(), t[1]))
+for name, appid in games:
+    sys.stdout.write(f"{name}\t{appid}\n")
+PY2
+}
+
+pick_installed_steam_game() {
+  local root
+  root="$(detect_steam_root)" || { echo "Steam root not found."; return 1; }
+
+  local -a games
+  mapfile -t games < <(list_installed_steam_games "$root" || true)
+  if (( ${#games[@]} == 0 )); then
+    echo "No installed Steam games found (no appmanifest_*.acf)."
+    return 1
+  fi
+
+  echo
+  echo "Installed Steam games:"
+  local i line name appid
+  for (( i=0; i<${#games[@]}; i++ )); do
+    line="${games[i]}"
+    name="${line%%$'\t'*}"
+    appid="${line##*$'\t'}"
+    printf "  [%d] %s (%s)\n" "$((i+1))" "$name" "$appid"
+  done
+  echo "  [B] Back"
+
+  local sel
+  read -r -p "Select game: " sel
+  [[ -n "$sel" ]] || return 1
+  if [[ "$sel" =~ ^[Bb]$ ]]; then
+    return 1
+  fi
+  if [[ ! "$sel" =~ ^[0-9]+$ ]]; then
+    echo "Invalid selection."
+    return 1
+  fi
+
+  local idx=$((sel-1))
+  if (( idx < 0 || idx >= ${#games[@]} )); then
+    echo "Out of range."
+    return 1
+  fi
+
+  line="${games[idx]}"
+  SMTTY_APPLAUNCH_NAME="${line%%$'\t'*}"
+  SMTTY_APPLAUNCH_APPID="${line##*$'\t'}"
+  export SMTTY_APPLAUNCH_NAME SMTTY_APPLAUNCH_APPID
+
+  echo "Selected: ${SMTTY_APPLAUNCH_NAME} (${SMTTY_APPLAUNCH_APPID})"
+  return 0
+}
+# -----------------------------------------------------------------------------
+
+
 backable_read() {
   # backable_read <var_name> <prompt>
   local __var_name=$1
@@ -3388,6 +3526,16 @@ launch_gamescope_session() {
 
   inner_cmd=("${STEAM_CMD_ARR[@]}")
 
+  # Auto-launch selected Steam game (from main menu picker) inside this Steam session.
+  if [[ -n "${SMTTY_APPLAUNCH_APPID:-}" ]]; then
+    inner_cmd+=(-applaunch "$SMTTY_APPLAUNCH_APPID")
+    if [[ -n "${SMTTY_APPLAUNCH_NAME:-}" ]]; then
+      inner_label+=" (auto-launch: ${SMTTY_APPLAUNCH_NAME})"
+    else
+      inner_label+=" (auto-launch appid ${SMTTY_APPLAUNCH_APPID})"
+    fi
+  fi
+
   echo
   echo "Launching gamescope:"
   if [[ -n "$CURRENT_PROFILE" ]]; then
@@ -3847,6 +3995,8 @@ interactive_profile_menu() {
     fi
     echo
     echo "Options:"
+    echo "  [G] Pick installed Steam game to auto-launch"
+    echo "  [C] Clear selected game"
     echo "  [1] Use this profile"
     echo "  [2] Select a different profile"
     echo "  [3] Create new profile"
@@ -3888,6 +4038,15 @@ interactive_profile_menu() {
         fi
         continue
         ;;
+    [Gg])
+      pick_installed_steam_game || true
+      ;;
+    [Cc])
+      SMTTY_APPLAUNCH_APPID=""
+      SMTTY_APPLAUNCH_NAME=""
+      export SMTTY_APPLAUNCH_APPID SMTTY_APPLAUNCH_NAME
+      echo "Selected game cleared."
+      ;;
       *)
         echo "Enter 1, 2, 3, 4 or b."
         ;;
