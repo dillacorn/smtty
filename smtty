@@ -123,6 +123,29 @@ unset __smtty_arg
 
 set -euo pipefail
 
+
+# --- CLI payload capture (args after `--`) ---
+# In Gamepad UI mode, extra args after `--` are treated as Steam arguments and appended to the Steam command.
+# Examples:
+#   smtty -c <profile> -- -applaunch 730
+#   smtty -c <profile> -- steam -applaunch 730 -tenfoot
+SMTTY_CLI_PAYLOAD=()
+smtty_capture_cli_payload() {
+  SMTTY_CLI_PAYLOAD=()
+  local saw_ddash=0
+  local a
+  for a in "$@"; do
+    if (( saw_ddash )); then
+      SMTTY_CLI_PAYLOAD+=("$a")
+    elif [[ "$a" == "--" ]]; then
+      saw_ddash=1
+    fi
+  done
+}
+smtty_capture_cli_payload "$@"
+# --- end CLI payload capture ---
+
+
 # >>> SMTTY GPU/DRIVER COMPAT (auto-insert) >>>
 # Controls:
 #   SMTTY_FORCE_MULTI_XWAYLAND=1   -> force-enable multi-xwayland knobs
@@ -783,6 +806,9 @@ Options:
   -P        PIPE mode: run one game command in gamescope using the selected profile.
             Launch Options (native Steam):  smtty -c <profile> -PIPE -- %command%
             Launch Options (Steam Flatpak): flatpak-spawn --host smtty -c <profile> -PIPE -- %command%
+  --        (Gamepad UI) Optional Steam args to append to Steam-in-gamescope.
+            Example: smtty -c <profile> -- -applaunch 730
+                     smtty -c <profile> -- steam -applaunch 730 -tenfoot
 
 Environment:
   STEAM_CMD_OVERRIDE='steam -gamepadui'
@@ -3603,8 +3629,41 @@ launch_gamescope_session() {
 
   inner_cmd=("${STEAM_CMD_ARR[@]}")
 
+
+  # CLI payload after `--`:
+  # If provided, treat it as additional Steam args for the in-gamescope Steam session.
+  # (For arbitrary commands inside gamescope, use -P/-PIPE.)
+  local cli_args_used=0
+  if (( ${#SMTTY_CLI_PAYLOAD[@]} > 0 )); then
+    local -a extra=("${SMTTY_CLI_PAYLOAD[@]}")
+
+    # Strip common Steam invocations if the user included them.
+    if [[ "${extra[0]}" == "steam" || "${extra[0]}" == */steam ]]; then
+      extra=("${extra[@]:1}")
+    elif [[ "${extra[0]}" == "flatpak" ]]; then
+      if (( ${#extra[@]} >= 3 )) && [[ "${extra[1]}" == "run" && "${extra[2]}" == "com.valvesoftware.Steam" ]]; then
+        extra=("${extra[@]:3}")
+      fi
+    fi
+
+    # Only accept obvious Steam arguments here.
+    if (( ${#extra[@]} > 0 )); then
+      case "${extra[0]}" in
+        -*|steam://*)
+          inner_cmd+=("${extra[@]}")
+          inner_label+=" (CLI args)"
+          cli_args_used=1
+          ;;
+        *)
+          print_warn "Ignoring CLI payload after '--' in Gamepad UI mode (not a Steam arg). Use -P/-PIPE for arbitrary commands."
+          ;;
+      esac
+    fi
+  fi
+
+
   # Auto-launch selected Steam game (from main menu picker) inside this Steam session.
-  if [[ -n "${SMTTY_APPLAUNCH_APPID:-}" ]]; then
+  if (( cli_args_used == 0 )) && [[ -n "${SMTTY_APPLAUNCH_APPID:-}" ]]; then
     inner_cmd+=(-applaunch "$SMTTY_APPLAUNCH_APPID")
     if [[ -n "${SMTTY_APPLAUNCH_NAME:-}" ]]; then
       inner_label+=" (auto-launch: ${SMTTY_APPLAUNCH_NAME})"
