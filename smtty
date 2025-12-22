@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v10.3}"
+SMTTY_VERSION="${SMTTY_VERSION:-v10.4}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -529,6 +529,40 @@ start_desktop_steam_spawn_watcher() {
 SMTTY_APPLAUNCH_APPID="${SMTTY_APPLAUNCH_APPID:-}"
 SMTTY_APPLAUNCH_NAME="${SMTTY_APPLAUNCH_NAME:-}"
 
+# --- installed game picker paging ---
+SMTTY_GAME_PICKER_PAGE_SIZE_DEFAULT="${SMTTY_GAME_PICKER_PAGE_SIZE_DEFAULT:-20}"
+SMTTY_GAME_PICKER_PAGE_SIZE_MAX="${SMTTY_GAME_PICKER_PAGE_SIZE_MAX:-200}"
+SMTTY_GAME_PICKER_PAGE_SIZE_FILE="$CONFIG_DIR/game_picker_page_size"
+
+smtty_game_picker_get_page_size() {
+  local def="${SMTTY_GAME_PICKER_PAGE_SIZE_DEFAULT:-20}"
+  local max="${SMTTY_GAME_PICKER_PAGE_SIZE_MAX:-200}"
+  local f="${SMTTY_GAME_PICKER_PAGE_SIZE_FILE:-$CONFIG_DIR/game_picker_page_size}"
+
+  local v=""
+  if [[ -r "$f" ]]; then
+    v="$(head -n1 "$f" 2>/dev/null | tr -d '\r' || true)"
+  fi
+
+  if [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 5 && v <= max )); then
+    printf '%s\n' "$v"
+  else
+    printf '%s\n' "$def"
+  fi
+}
+
+smtty_game_picker_save_page_size() {
+  local n="${1:-}"
+  local max="${SMTTY_GAME_PICKER_PAGE_SIZE_MAX:-200}"
+  [[ "$n" =~ ^[0-9]+$ ]] || return 1
+  (( n >= 5 && n <= max )) || return 1
+  mkdir -p "$CONFIG_DIR"
+  printf '%s\n' "$n" >"$SMTTY_GAME_PICKER_PAGE_SIZE_FILE"
+  return 0
+}
+# --- end installed game picker paging ---
+
+
 detect_steam_root() {
   # Prefer native Steam root, then Flatpak.
   local cand
@@ -624,42 +658,134 @@ pick_installed_steam_game() {
     return 1
   fi
 
-  echo
-  echo "Installed Steam games:"
-  local i line name appid
-  for (( i=0; i<${#games[@]}; i++ )); do
-    line="${games[i]}"
-    name="${line%%$'\t'*}"
-    appid="${line##*$'\t'}"
-    printf "  [%d] %s (%s)\n" "$((i+1))" "$name" "$appid"
+  local page_size
+  page_size="$(smtty_game_picker_get_page_size 2>/dev/null || true)"
+  if [[ ! "$page_size" =~ ^[0-9]+$ ]]; then
+    page_size=20
+  fi
+
+  local max="${SMTTY_GAME_PICKER_PAGE_SIZE_MAX:-200}"
+  local page=0
+
+  while :; do
+    local total=${#games[@]}
+    local pages=$(( (total + page_size - 1) / page_size ))
+    (( pages < 1 )) && pages=1
+    (( page < 0 )) && page=0
+    if (( page >= pages )); then
+      page=$(( pages - 1 ))
+    fi
+
+    local start=$(( page * page_size ))
+    local end=$(( start + page_size ))
+    (( end > total )) && end=$total
+    local on_page=$(( end - start ))
+
+    echo
+    echo "Installed Steam games (page $((page + 1))/$pages, showing $((start + 1))-$end of $total, page size $page_size):"
+    echo
+
+    local i line name appid local_i
+    for (( i = start; i < end; i++ )); do
+      line="${games[i]}"
+      name="${line%%$'	'*}"
+      appid="${line##*$'	'}"
+      local_i=$(( i - start + 1 ))
+      printf "  [%d] %s (%s)
+" "$local_i" "$name" "$appid"
+    done
+
+    echo
+    echo "  [N] Next page   [P] Previous page   [G] Set page size   [B] Back"
+    echo
+
+    printf "Select game (1-%d) or n/p/g/b: " "$on_page"
+    local ch=""
+    IFS= read -rsn1 ch || exit 1
+
+    if [[ "$ch" == $'
+' || "$ch" == $'
+' ]]; then
+      echo
+      continue
+    fi
+
+    case "$ch" in
+      [bB])
+        echo
+        return 1
+        ;;
+      [nN])
+        echo
+        if (( page + 1 < pages )); then
+          page=$(( page + 1 ))
+        fi
+        continue
+        ;;
+      [pP])
+        echo
+        if (( page > 0 )); then
+          page=$(( page - 1 ))
+        fi
+        continue
+        ;;
+      [gG])
+        echo
+        local newps
+        if ! backable_read newps "Games per page [$page_size] (5-$max, b = back): "; then
+          continue
+        fi
+        [[ -z "$newps" ]] && newps="$page_size"
+        if ! smtty_game_picker_save_page_size "$newps"; then
+          echo "Invalid page size. Must be 5-$max."
+          continue
+        fi
+        page_size="$newps"
+        page=0
+        echo "Saved page size: $page_size"
+        continue
+        ;;
+      [0-9])
+        # multi-digit selection: echo first digit, then read rest of line (until Enter)
+        printf '%s' "$ch"
+        local rest=""
+        IFS= read -r rest || true
+        local sel="${ch}${rest}"
+        sel="${sel//[[:space:]]/}"
+
+        if [[ -z "$sel" || ! "$sel" =~ ^[0-9]+$ ]]; then
+          echo "Invalid selection."
+          continue
+        fi
+
+        if (( sel < 1 || sel > on_page )); then
+          echo "Out of range."
+          continue
+        fi
+
+        local idx=$(( start + sel - 1 ))
+        if (( idx < 0 || idx >= total )); then
+          echo "Out of range."
+          continue
+        fi
+
+        line="${games[idx]}"
+        SMTTY_APPLAUNCH_NAME="${line%%$'	'*}"
+        SMTTY_APPLAUNCH_APPID="${line##*$'	'}"
+        export SMTTY_APPLAUNCH_NAME SMTTY_APPLAUNCH_APPID
+
+        echo "Selected: ${SMTTY_APPLAUNCH_NAME} (${SMTTY_APPLAUNCH_APPID})"
+        return 0
+        ;;
+      *)
+        echo
+        echo "Invalid key."
+        continue
+        ;;
+    esac
   done
-  echo "  [B] Back"
-
-  local sel
-  read -r -p "Select game: " sel
-  [[ -n "$sel" ]] || return 1
-  if [[ "$sel" =~ ^[Bb]$ ]]; then
-    return 1
-  fi
-  if [[ ! "$sel" =~ ^[0-9]+$ ]]; then
-    echo "Invalid selection."
-    return 1
-  fi
-
-  local idx=$((sel-1))
-  if (( idx < 0 || idx >= ${#games[@]} )); then
-    echo "Out of range."
-    return 1
-  fi
-
-  line="${games[idx]}"
-  SMTTY_APPLAUNCH_NAME="${line%%$'\t'*}"
-  SMTTY_APPLAUNCH_APPID="${line##*$'\t'}"
-  export SMTTY_APPLAUNCH_NAME SMTTY_APPLAUNCH_APPID
-
-  echo "Selected: ${SMTTY_APPLAUNCH_NAME} (${SMTTY_APPLAUNCH_APPID})"
-  return 0
 }
+
 # -----------------------------------------------------------------------------
 
 
