@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v10.1}"
+SMTTY_VERSION="${SMTTY_VERSION:-v10.2}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -4133,6 +4133,7 @@ interactive_profile_menu() {
     echo "Options:"
     echo "  [G] Pick installed Steam game to auto-launch"
     echo "  [C] Clear selected game"
+    echo "  [V] Check smtty version"
     echo "  [1] Use this profile"
     echo "  [2] Select a different profile"
     echo "  [3] Create new profile"
@@ -4182,6 +4183,12 @@ interactive_profile_menu() {
       SMTTY_APPLAUNCH_NAME=""
       export SMTTY_APPLAUNCH_APPID SMTTY_APPLAUNCH_NAME
       echo "Selected game cleared."
+      ;;
+    [Vv])
+      echo
+      smtty_print_version
+      echo
+      read -r -p "Press Enter to return to menu..." _smtty_ver_pause || true
       ;;
       *)
         echo "Enter 1, 2, 3, 4 or b."
