@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v10.2}"
+SMTTY_VERSION="${SMTTY_VERSION:-v10.3}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -669,6 +669,9 @@ backable_read() {
   local __prompt=$2
   local __value
   read -rp "$__prompt" __value || exit 1
+  if [[ "${__value,,}" == "b" ]]; then
+    return 2
+  fi
   if [[ "$__value" == "b" ]]; then
     return 1
   fi
@@ -684,6 +687,12 @@ read_one_key() {
   local __ch=""
   printf '%s' "$__prompt"
   IFS= read -rsn1 __ch || exit 1
+  if [[ "${__ch}" == $'\r' || "${__ch}" == $'\n' ]]; then
+    __ch=""
+  fi
+  if [[ "${__ch}" == "B" ]]; then
+    __ch="b"
+  fi
   printf '\n'
   if [[ "$__ch" == "b" ]]; then
     return 1
