@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v11.0}"
+SMTTY_VERSION="${SMTTY_VERSION:-v11.1}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -2488,9 +2488,17 @@ choose_pipewire_latency() {
 
 choose_perf_env_preset() {
   echo
-  echo "Perf/shader cache env preset (optional)."
+  echo "Perf/shader cache preset (optional)."
+  echo "  Goal: reduce shader-compilation stutter on some titles across launches."
   echo "  0 = off (default)"
-  echo "  1 = on  (vendor-aware, conservative)"
+  echo "  1 = on  (enables extra caching; uses more disk space)"
+  echo "  Notes:"
+  echo "    - Applies only to this smtty session/profile (not global)."
+  echo "    - Not an FPS boost. May do nothing depending on game/renderer."
+  echo "    - What it sets (vendor-aware):"
+  echo "      * DXVK_STATE_CACHE=1"
+  echo "      * AMD/Intel (Mesa): MESA_SHADER_CACHE_MAX_SIZE=4G"
+  echo "      * NVIDIA (OpenGL): __GL_SHADER_DISK_CACHE=1"
   echo
 
   local cur="${PERF_ENV_PRESET:-0}"
