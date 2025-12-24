@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v10.5}"
+SMTTY_VERSION="${SMTTY_VERSION:-v10.6}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -648,6 +648,9 @@ PY2
 }
 
 pick_installed_steam_game() {
+  local __smtty_find=""
+  local __smtty_find_inited=0
+  local -a __smtty_find_all=()
   local root
   root="$(detect_steam_root)" || { echo "Steam root not found."; return 1; }
 
@@ -668,6 +671,29 @@ pick_installed_steam_game() {
   local page=0
 
   while :; do
+    # SMTTY_FIND_PATCH_BEGIN
+    if (( __smtty_find_inited == 0 )); then
+      __smtty_find_all=("${games[@]}")
+      __smtty_find_inited=1
+    fi
+    if [[ -n "$__smtty_find" ]]; then
+      local __q="${__smtty_find,,}"
+      local -a __tmp=()
+      local __g
+      for __g in "${__smtty_find_all[@]}"; do
+        [[ "${__g,,}" == *"$__q"* ]] && __tmp+=("$__g")
+      done
+      if (( ${#__tmp[@]} == 0 )); then
+        echo "No matches for: $__smtty_find" >&2
+        __smtty_find=""
+        games=("${__smtty_find_all[@]}")
+      else
+        games=("${__tmp[@]}")
+      fi
+    else
+      games=("${__smtty_find_all[@]}")
+    fi
+    # SMTTY_FIND_PATCH_END
     local total=${#games[@]}
     local pages=$(( (total + page_size - 1) / page_size ))
     (( pages < 1 )) && pages=1
@@ -696,10 +722,10 @@ pick_installed_steam_game() {
     done
 
     echo
-    echo "  [N] Next page   [P] Previous page   [G] Set page size   [B] Back"
+    echo "  [N] Next page   [P] Previous page   [G] Set page size   [B] Back   [F] Find"
     echo
 
-    printf "Select game (1-%d) or n/p/g/b: " "$on_page"
+    printf "Select game (1-%d) or n/p/g/b/f: " "$on_page"
     local ch=""
     IFS= read -rsn1 ch || exit 1
 
@@ -709,8 +735,15 @@ pick_installed_steam_game() {
       echo
       continue
     fi
-
-    case "$ch" in
+case "${ch}" in
+    # SMTTY_FIND_CASE_BEGIN
+    f|F)
+      echo
+      read -r -p "Find game name (empty clears): " __smtty_find
+    page=0
+      continue
+      ;;
+    # SMTTY_FIND_CASE_END
       [bB])
         echo
         return 1
@@ -782,7 +815,7 @@ pick_installed_steam_game() {
         echo "Invalid key."
         continue
         ;;
-    esac
+esac
   done
 }
 
