@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v10.6}"
+SMTTY_VERSION="${SMTTY_VERSION:-v11.0}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -64,8 +64,10 @@ smtty_print_version() {
 }
 
 # Early exit for version query (so we do not have to touch existing getopts)
+SMTTY_DOCTOR_REQUESTED=0
 for __smtty_arg in "$@"; do
   case "$__smtty_arg" in
+    --doctor) SMTTY_DOCTOR_REQUESTED=1 ;;
     -v|--version)
       smtty_print_version
       exit 0
@@ -158,37 +160,47 @@ smtty_capture_cli_payload "$@"
 # - NVIDIA fixups are only applied when proprietary driver is detected and vars are unset.
 
 smtty_detect_gpu_vendor() {
-  # returns: amd|nvidia|intel|unknown
+  # Returns: amd|nvidia|intel|hybrid|unknown
+  # Hybrid is detected when multiple GPU vendors are present (eg. Intel iGPU + NVIDIA dGPU).
   local l
   if command -v lspci >/dev/null 2>&1; then
-    l="$(lspci -nn | grep -Eiq '(VGA|3D|Display)' && lspci -nn | grep -Ei '(VGA|3D|Display)' || true)"
+    l="$(lspci -nn 2>/dev/null | grep -Ei '(VGA|3D|Display)' || true)"
   else
     l=""
   fi
 
-  # Prefer PCI vendor IDs when present.
-  # AMD:    1002
-  # NVIDIA: 10de
-  # Intel:  8086
-  if echo "$l" | grep -Eiq '\[1002:'; then
-    echo "amd"
-  elif echo "$l" | grep -Eiq '\[10de:'; then
-    echo "nvidia"
-  elif echo "$l" | grep -Eiq '\[8086:'; then
-    echo "intel"
-  else
-    # Fallback name match.
-    if echo "$l" | grep -Eiq 'AMD|Radeon'; then
-      echo "amd"
-    elif echo "$l" | grep -Eiq 'NVIDIA|GeForce|Quadro'; then
-      echo "nvidia"
-    elif echo "$l" | grep -Eiq 'Intel'; then
-      echo "intel"
-    else
-      echo "unknown"
-    fi
+  local has_amd=0 has_nvidia=0 has_intel=0
+  if echo "$l" | grep -Eiq '\[1002:'; then has_amd=1; fi
+  if echo "$l" | grep -Eiq '\[10de:'; then has_nvidia=1; fi
+  if echo "$l" | grep -Eiq '\[8086:'; then has_intel=1; fi
+
+  local count=$((has_amd + has_nvidia + has_intel))
+  if (( count >= 2 )); then
+    echo "hybrid"
+    return 0
   fi
+  if (( has_amd )); then
+    echo "amd"
+    return 0
+  fi
+  if (( has_nvidia )); then
+    echo "nvidia"
+    return 0
+  fi
+  if (( has_intel )); then
+    echo "intel"
+    return 0
+  fi
+
+  # Fallback (older/odd lspci formats)
+  if echo "$l" | grep -Eiq 'AMD|ATI'; then echo "amd"; return 0; fi
+  if echo "$l" | grep -Eiq 'NVIDIA'; then echo "nvidia"; return 0; fi
+  if echo "$l" | grep -Eiq 'Intel'; then echo "intel"; return 0; fi
+
+  echo "unknown"
+  return 0
 }
+
 
 smtty_has_nvidia_proprietary() {
   # Best-effort detection; nouveau systems should return false here.
@@ -218,15 +230,100 @@ if [[ "${SMTTY_DISABLE_MULTI_XWAYLAND:-0}" == "1" ]]; then
   SMTTY_MULTI_XWAYLAND_OK=0
 fi
 
-# Minimal NVIDIA env fixups (only if unset), gated to proprietary.
-if [[ "$SMTTY_GPU_VENDOR" == "nvidia" ]] && smtty_has_nvidia_proprietary && [[ "${SMTTY_DISABLE_NVIDIA_FIXUPS:-0}" != "1" ]]; then
-  : "${__GLX_VENDOR_LIBRARY_NAME:=nvidia}"
-  export __GLX_VENDOR_LIBRARY_NAME
+# >>> SMTTY GPU/DRIVER COMPAT v2 >>>
+# Fix hybrid GPU mis-detection by tying NVIDIA env fixups to the *selected DRM output* GPU.
+# Also provides optional per-profile perf env + PipeWire latency helpers.
+#
+# Active GPU vendor is resolved from /sys/class/drm/card*-<connector>/device/vendor.
+# Vendor ids:
+#   0x10de NVIDIA, 0x1002 AMD, 0x8086 Intel
 
-  : "${GBM_BACKEND:=nvidia-drm}"
-  export GBM_BACKEND
-fi
+smtty_vendor_id_to_name() {
+  local vid="${1#0x}"
+  vid="${vid,,}"
+  case "$vid" in
+    10de) echo "nvidia" ;;
+    1002) echo "amd" ;;
+    8086) echo "intel" ;;
+    *)    echo "unknown" ;;
+  esac
+}
+
+smtty_get_gpu_vendor_for_output() {
+  local out="$1"
+  local p vid
+  # connector entries look like /sys/class/drm/card0-DP-1
+  for p in /sys/class/drm/card*-"$out"/device/vendor; do
+    if [[ -f "$p" ]]; then
+      vid="$(<"$p")"
+      smtty_vendor_id_to_name "$vid"
+      return 0
+    fi
+  done
+  echo "unknown"
+  return 0
+}
+
+smtty_refresh_active_gpu_vendor() {
+  # Prefer output-specific vendor. Fall back to system-wide vendor detection.
+  if [[ -n "${DRM_SHORT:-}" ]]; then
+    SMTTY_ACTIVE_GPU_VENDOR="$(smtty_get_gpu_vendor_for_output "$DRM_SHORT")"
+  fi
+  if [[ -z "${SMTTY_ACTIVE_GPU_VENDOR:-}" || "${SMTTY_ACTIVE_GPU_VENDOR:-}" == "unknown" ]]; then
+    SMTTY_ACTIVE_GPU_VENDOR="${SMTTY_GPU_VENDOR:-$(smtty_detect_gpu_vendor)}"
+  fi
+}
+
+smtty_apply_gpu_env_fixups() {
+  # NVIDIA-only env fixups (only if unset), gated to proprietary driver.
+  # Crucially: only applied when the selected DRM output lives on NVIDIA.
+  smtty_refresh_active_gpu_vendor
+
+  if [[ "${SMTTY_ACTIVE_GPU_VENDOR:-}" == "nvidia" ]] && smtty_has_nvidia_proprietary && [[ "${SMTTY_DISABLE_NVIDIA_FIXUPS:-0}" != "1" ]]; then
+    : "${__GLX_VENDOR_LIBRARY_NAME:=nvidia}"
+    : "${GBM_BACKEND:=nvidia-drm}"
+    export __GLX_VENDOR_LIBRARY_NAME GBM_BACKEND
+  fi
+}
+
+smtty_apply_pipewire_latency_env() {
+  # Optional PipeWire latency hint for gamescope.
+  # Use "inherit" (default) unless you know you need this.
+  local v="${PIPEWIRE_LATENCY:-inherit}"
+  if [[ -n "$v" && "$v" != "inherit" ]]; then
+    export PIPEWIRE_LATENCY="$v"
+  fi
+}
+
+smtty_apply_perf_env_preset() {
+  # Optional shader-cache/perf env preset (vendor-aware). Default off.
+  # Conservative by design: avoids risky knobs (async, glthread, cleanup disable).
+  if [[ "${PERF_ENV_PRESET:-0}" != "1" ]]; then
+    return 0
+  fi
+
+  smtty_refresh_active_gpu_vendor
+
+  # DXVK: safe for most titles, reduces stutter on first-run/compiles.
+  : "${DXVK_STATE_CACHE:=1}"
+  export DXVK_STATE_CACHE
+
+  case "${SMTTY_ACTIVE_GPU_VENDOR:-unknown}" in
+    amd|intel)
+      # Mesa shader cache sizing (kept modest to avoid disk bloat).
+      : "${MESA_SHADER_CACHE_MAX_SIZE:=4G}"
+      export MESA_SHADER_CACHE_MAX_SIZE
+      ;;
+    nvidia)
+      # NVIDIA GL shader disk cache.
+      : "${__GL_SHADER_DISK_CACHE:=1}"
+      export __GL_SHADER_DISK_CACHE
+      ;;
+  esac
+}
+# <<< SMTTY GPU/DRIVER COMPAT v2 <<<
 # <<< SMTTY GPU/DRIVER COMPAT (auto-insert) <<<
+
 
 
 # ---------------- colors / logging ----------------
@@ -251,6 +348,75 @@ print_info() {
 print_success() {
   printf '%s[OK]%s %s\n' "$GREEN" "$NC" "$*"
 }
+
+
+smtty_doctor() {
+  echo "smtty --doctor"
+  echo
+
+  local gs
+  gs="$(command -v gamescope 2>/dev/null || true)"
+  if [[ -n "$gs" ]]; then
+    echo "[OK] gamescope: $gs"
+  else
+    echo "[FAIL] gamescope: not found in PATH"
+  fi
+
+  if [[ -n "$gs" ]] && command -v getcap >/dev/null 2>&1; then
+    local caps
+    caps="$(getcap "$gs" 2>/dev/null || true)"
+    if echo "$caps" | grep -q 'cap_sys_nice'; then
+      echo "[OK] cap_sys_nice: present"
+    else
+      echo "[WARN] cap_sys_nice: missing (gamescope scheduling/latency may suffer)"
+      echo "      Fix: sudo setcap 'cap_sys_nice=eip' \"$gs\""
+      echo "      Note: package updates may remove file capabilities; re-apply if needed."
+    fi
+  else
+    echo "[WARN] getcap not available; cannot check cap_sys_nice"
+  fi
+
+  local ml
+  ml="$(ulimit -l 2>/dev/null || true)"
+  if [[ -n "$ml" ]]; then
+    echo "[INFO] memlock (ulimit -l): $ml"
+    if [[ "$ml" != "unlimited" && "$ml" =~ ^[0-9]+$ && "$ml" -lt 65536 ]]; then
+      echo "[WARN] memlock is low; shader cache/Vulkan may benefit from higher limits."
+      echo "      Suggested (system-wide): /etc/security/limits.d/99-gamescope.conf"
+      echo "        * soft memlock unlimited"
+      echo "        * hard memlock unlimited"
+      echo "      Or for your user only:"
+      echo "        $USER soft memlock unlimited"
+      echo "        $USER hard memlock unlimited"
+      echo "      Re-login required."
+    fi
+  fi
+
+  echo
+  echo "[INFO] GPU summary (lspci):"
+  if command -v lspci >/dev/null 2>&1; then
+    lspci -nn 2>/dev/null | grep -Ei '(VGA|3D|Display)' || true
+  else
+    echo "  lspci not available"
+  fi
+
+  echo
+  echo "[INFO] Selected DRM output: ${DRM_SHORT:-"(none)"}"
+  smtty_refresh_active_gpu_vendor
+  echo "[INFO] Active GPU vendor (by output): ${SMTTY_ACTIVE_GPU_VENDOR:-unknown}"
+  echo
+
+  if command -v gamescope-session >/dev/null 2>&1; then
+    echo "[INFO] gamescope-session detected."
+    echo "      If you want a DM/session workflow, consider using gamescope-session + smtty only for profile generation."
+  fi
+}
+
+if (( SMTTY_DOCTOR_REQUESTED )); then
+  smtty_doctor
+  exit 0
+fi
+
 
 # ---------------- Steam command (Gamepad UI) ----------------
 # Optional override:
@@ -318,6 +484,18 @@ LOW_LATENCY_TEARING=0   # 0/1: export SteamOS-style tearing capability flags to 
 # "2"       = info
 # "3"       = verbose debug
 PIPEWIRE_DEBUG_MODE="2"
+
+
+# PipeWire latency hint for gamescope
+# "inherit" = do not set PIPEWIRE_LATENCY (respect system / environment)
+# "<frames>/<rate>" = e.g. 128/48000, 64/48000
+PIPEWIRE_LATENCY="inherit"
+
+# Optional perf/shader cache env preset (0/1). Default off.
+PERF_ENV_PRESET=0
+
+# Active GPU vendor (resolved from selected DRM output; set at runtime)
+SMTTY_ACTIVE_GPU_VENDOR=""
 
 # LD_PRELOAD handling for gamescope/Steam
 # "inherit" = do not modify LD_PRELOAD
@@ -956,6 +1134,7 @@ Usage:
 
 Options:
   -h        Show this help and exit.
+  --doctor  Print system capability diagnostics and exit.
   -n        New interactive setup. Prompts for profile name to save.
   -l        Use last saved profile immediately (no questions).
             With -l, smtty never kills Steam unless you also pass -S.
@@ -1412,6 +1591,8 @@ GAMESCOPE_HDR_NITS=$GAMESCOPE_HDR_NITS
 FORCE_GRAB_CURSOR=$FORCE_GRAB_CURSOR
 LOW_LATENCY_TEARING=$LOW_LATENCY_TEARING
 PIPEWIRE_DEBUG_MODE=$PIPEWIRE_DEBUG_MODE
+PIPEWIRE_LATENCY=$PIPEWIRE_LATENCY
+PERF_ENV_PRESET=$PERF_ENV_PRESET
 LD_PRELOAD_MODE=$LD_PRELOAD_MODE
 AUDIO_SWITCH_ENABLED=$AUDIO_SWITCH_ENABLED
 AUDIO_SINK_NAME=$AUDIO_SINK_NAME
@@ -1443,6 +1624,8 @@ load_profile_file() {
 
   STEAM_LAUNCH_MODE=${STEAM_LAUNCH_MODE:-gamepad}
   PIPEWIRE_DEBUG_MODE=${PIPEWIRE_DEBUG_MODE:-2}
+  PIPEWIRE_LATENCY=${PIPEWIRE_LATENCY:-inherit}
+  PERF_ENV_PRESET=${PERF_ENV_PRESET:-0}
   FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
   LOW_LATENCY_TEARING=${LOW_LATENCY_TEARING:-0}
   LD_PRELOAD_MODE=${LD_PRELOAD_MODE:-inherit}
@@ -1522,6 +1705,11 @@ detect_session_mode() {
 # ---------------- NVIDIA + Flatpak GBM autodetect ----------------
 
 have_nvidia_gpu() {
+  # Hybrid-safe: only treat as NVIDIA when the selected DRM output is NVIDIA-backed.
+  smtty_refresh_active_gpu_vendor
+  if [[ "${SMTTY_ACTIVE_GPU_VENDOR:-}" != "nvidia" ]]; then
+    return 1
+  fi
   if command -v nvidia-smi >/dev/null 2>&1; then
     return 0
   fi
@@ -1899,6 +2087,9 @@ choose_drm_output() {
 
   local chosen=${entries[choice-1]}
   DRM_SHORT=${chosen%%:*}
+
+  # Tie GPU fixups to the selected connector's GPU (hybrid-safe)
+  SMTTY_ACTIVE_GPU_VENDOR="$(smtty_get_gpu_vendor_for_output "$DRM_SHORT")"
   DRM_NATIVE_MODE=${chosen#*:}
 
   # Detect EDID-reported HDR peak nits for this output (optional; used as HDR prompt default).
@@ -2259,6 +2450,65 @@ choose_pipewire_debug() {
   echo "  3        = verbose debug"
   echo
   return 0
+}
+
+choose_pipewire_latency() {
+  echo
+  echo "PipeWire latency hint (optional)."
+  echo "  This sets PIPEWIRE_LATENCY for gamescope only."
+  echo "  Use 'inherit' unless you know you need this."
+  echo "  Examples: 128/48000  64/48000"
+  echo
+
+  local cur="${PIPEWIRE_LATENCY:-inherit}"
+  local val
+  while :; do
+    val="$(read_default "PIPEWIRE_LATENCY" "$cur")"
+    if [[ "$val" == "$BACK_SENTINEL" ]]; then
+      return 1
+    fi
+
+    [[ -z "$val" ]] && val="inherit"
+
+    if [[ "$val" == "inherit" ]]; then
+      PIPEWIRE_LATENCY="inherit"
+      echo "PipeWire latency env set to: inherit"
+      return 0
+    fi
+
+    if [[ "$val" =~ ^[0-9]+/[0-9]+$ ]]; then
+      PIPEWIRE_LATENCY="$val"
+      echo "PipeWire latency env set to: $PIPEWIRE_LATENCY"
+      return 0
+    fi
+
+    echo "Invalid value. Use 'inherit' or '<frames>/<rate>' (e.g. 128/48000)."
+  done
+}
+
+choose_perf_env_preset() {
+  echo
+  echo "Perf/shader cache env preset (optional)."
+  echo "  0 = off (default)"
+  echo "  1 = on  (vendor-aware, conservative)"
+  echo
+
+  local cur="${PERF_ENV_PRESET:-0}"
+  local val
+  while :; do
+    val="$(read_default "PERF_ENV_PRESET (0/1)" "$cur")"
+    if [[ "$val" == "$BACK_SENTINEL" ]]; then
+      return 1
+    fi
+
+    if [[ "$val" == "0" || "$val" == "1" ]]; then
+      PERF_ENV_PRESET="$val"
+      echo "Perf env preset set to: $PERF_ENV_PRESET"
+      return 0
+    fi
+
+    echo "Invalid value. Enter 0 or 1."
+  done
 }
 
 choose_ld_preload_mode() {
@@ -2838,6 +3088,12 @@ launch_gamescope_payload() {
 
   maybe_set_flatpak_nvidia_gbm_env
   run_pre_hook
+
+  # Apply output-tied GPU env fixups and optional perf/latency presets
+  smtty_apply_gpu_env_fixups
+  smtty_apply_pipewire_latency_env
+  smtty_apply_perf_env_preset
+
 
   if (( LOW_LATENCY_TEARING == 1 )) && [[ "$SESSION_MODE" == "kms" ]]; then
     export STEAM_GAMESCOPE_TEARING_SUPPORTED=1
@@ -3714,6 +3970,12 @@ launch_vanilla_gamescope() {
 
   run_pre_hook
 
+  # Apply output-tied GPU env fixups and optional perf/latency presets
+  smtty_apply_gpu_env_fixups
+  smtty_apply_pipewire_latency_env
+  smtty_apply_perf_env_preset
+
+
   if (( LOW_LATENCY_TEARING == 1 )) && [[ "$SESSION_MODE" == "kms" ]]; then
     export STEAM_GAMESCOPE_TEARING_SUPPORTED=1
     export STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1
@@ -3929,6 +4191,8 @@ launch_gamescope_session() {
   echo "  Force cursor grab:     ${FORCE_GRAB_CURSOR}"
   echo "  Low-latency/tearing:   ${LOW_LATENCY_TEARING} (KMS-only)"
   echo "  PipeWire debug mode:   ${PIPEWIRE_DEBUG_MODE}"
+  echo "  PipeWire latency env: ${PIPEWIRE_LATENCY:-inherit}"
+  echo "  Perf env preset:      ${PERF_ENV_PRESET:-0}"
   echo "  LD_PRELOAD mode:       ${LD_PRELOAD_MODE:-inherit}"
   echo "  Audio switch enabled:  ${AUDIO_SWITCH_ENABLED}"
   if (( AUDIO_SWITCH_ENABLED )); then
@@ -4034,7 +4298,21 @@ interactive_new_config() {
           fi
           step=$((step - 1))
         else
-          step=7
+          if ! choose_pipewire_latency; then
+            if (( from_menu )); then
+              echo "Returning to main menu."
+              return 1
+            fi
+            step=$((step - 1))
+          elif ! choose_perf_env_preset; then
+            if (( from_menu )); then
+              echo "Returning to main menu."
+              return 1
+            fi
+            step=$((step - 1))
+          else
+            step=7
+          fi
         fi
         ;;
       7)
@@ -4102,6 +4380,8 @@ run_from_current_config() {
   fi
 
   PIPEWIRE_DEBUG_MODE=${PIPEWIRE_DEBUG_MODE:-2}
+  PIPEWIRE_LATENCY=${PIPEWIRE_LATENCY:-inherit}
+  PERF_ENV_PRESET=${PERF_ENV_PRESET:-0}
   FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
   LOW_LATENCY_TEARING=${LOW_LATENCY_TEARING:-0}
   LD_PRELOAD_MODE=${LD_PRELOAD_MODE:-inherit}
@@ -4576,3 +4856,5 @@ fi
 
 
 interactive_profile_menu
+  print_profile_line "PipeWire latency env:"    "${PIPEWIRE_LATENCY:-inherit}" "(inherit or frames/rate)"
+  print_profile_line "Perf env preset:"         "${PERF_ENV_PRESET:-0}"     "(0/1, vendor-aware)"
