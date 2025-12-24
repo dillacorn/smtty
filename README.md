@@ -21,6 +21,8 @@ Start here: [Welcome to "smtty" Discussions](https://github.com/dillacorn/smtty/
 * If I close the overlay with the mouse perfectly still, the game often fails to re-grab the cursor and the **camera/aim can feel stuck or pinned to an edge**.
 * Current workaround: **jiggle the mouse while opening and closing the Steam Big Picture overlay** so the game can re-grab the cursor.
 
+I made an issue on this https://github.com/ValveSoftware/gamescope/issues/2042
+
 ### Overlay limitations
 
 - When running gamescope, clipboard integration with the desktop session is one-way: you can copy from the gamescope session to the desktop, but you cannot copy from the desktop into the gamescope session (no desktop → gamescope paste).
