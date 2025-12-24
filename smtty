@@ -2866,7 +2866,77 @@ launch_gamescope_payload() {
   return "$gs_status"
 }
 
+# SMTTY_GAMEPADUI_PIPE_HELPER_BEGIN
+smtty_in_gamepadui_session() {
+  # True when smtty is launched from Steam Gamepad UI running inside gamescope.
+  # Used to bypass -P to avoid recursive/nested gamescope/profile handling.
+  local pid depth
+  local seen_steam=0
+  local seen_gamescope=0
+
+  # Optional explicit override from the outer smtty session.
+  if [[ "${SMTTY_GAMEPADUI_SESSION:-0}" == "1" ]]; then
+    return 0
+  fi
+
+  pid="${PPID:-0}"
+  depth=0
+
+  while [[ "$pid" =~ ^[0-9]+$ ]] && (( pid > 1 )) && (( depth < 64 )); do
+    local cmdline ppid
+    cmdline="$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null || true)"
+
+    if [[ "$cmdline" == *gamescope* ]]; then
+      seen_gamescope=1
+    fi
+
+    if [[ "$cmdline" == *steam* ]] && { [[ "$cmdline" == *" -gamepadui"* ]] || [[ "$cmdline" == *" -tenfoot"* ]]; }; then
+      seen_steam=1
+    fi
+
+    if (( seen_gamescope == 1 && seen_steam == 1 )); then
+      return 0
+    fi
+
+    ppid="$(awk '{print $4}' "/proc/${pid}/stat" 2>/dev/null || echo 0)"
+    pid="$ppid"
+    ((depth++))
+  done
+
+  return 1
+}
+# SMTTY_GAMEPADUI_PIPE_HELPER_END
+
 run_pipe_mode() {
+  # SMTTY_GAMEPADUI_PIPE_GUARD_BEGIN
+  if [[ "${SMTTY_PIPE_GUARD_DISABLE:-0}" != "1" ]] && smtty_in_gamepadui_session; then
+    local -a wrapped_cmd=()
+    local a
+    local found=0
+
+    for a in "$@"; do
+      if (( found == 0 )); then
+        if [[ "$a" == "--" ]]; then
+          found=1
+        fi
+        continue
+      fi
+      wrapped_cmd+=("$a")
+    done
+
+    if (( found == 0 )); then
+      wrapped_cmd=("$@")
+    fi
+
+    if (( ${#wrapped_cmd[@]} == 0 )); then
+      echo "[ERROR] smtty -P invoked without a command; expected: smtty ... -P -- %command%" >&2
+      return 1
+    fi
+
+    exec "${wrapped_cmd[@]}"
+  fi
+  # SMTTY_GAMEPADUI_PIPE_GUARD_END
+
   # Usage from Steam Launch Options:
   #   smtty -c <profile> -PIPE -- %command%
   # Steam Flatpak:
