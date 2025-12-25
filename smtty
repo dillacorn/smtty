@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v11.1}"
+SMTTY_VERSION="${SMTTY_VERSION:-v11.2}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -4658,6 +4658,7 @@ interactive_profile_menu() {
     echo
     echo "Options:"
     echo "  [G] Pick installed Steam game to auto-launch"
+    echo "  [D] Doctor (gamescope performance tips)"
     echo "  [C] Clear selected game"
     echo "  [V] Check smtty version"
     echo "  [1] Use this profile"
@@ -4667,7 +4668,7 @@ interactive_profile_menu() {
     echo "  [b] Exit"
 
     local choice
-    if ! read_one_key choice "Choose option [1-4, b = exit]: "; then
+    if ! read_one_key choice "Choose option [G,C,D,V,1-4,b]: " ; then
       echo "Exiting."
       exit 0
     fi
@@ -4704,6 +4705,12 @@ interactive_profile_menu() {
     [Gg])
       pick_installed_steam_game || true
       ;;
+    [Dd])
+      echo
+      smtty_doctor
+      echo
+      read -r -p "Press Enter to return to menu..." _smtty_doc_pause || true
+      ;;
     [Cc])
       SMTTY_APPLAUNCH_APPID=""
       SMTTY_APPLAUNCH_NAME=""
@@ -4717,7 +4724,7 @@ interactive_profile_menu() {
       read -r -p "Press Enter to return to menu..." _smtty_ver_pause || true
       ;;
       *)
-        echo "Enter 1, 2, 3, 4 or b."
+      echo "Enter G, C, D, V, 1, 2, 3, 4, or b."
         ;;
     esac
   done
