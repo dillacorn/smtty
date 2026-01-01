@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v11.2}"
+SMTTY_VERSION="${SMTTY_VERSION:-v11.3}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -707,6 +707,9 @@ start_desktop_steam_spawn_watcher() {
 SMTTY_APPLAUNCH_APPID="${SMTTY_APPLAUNCH_APPID:-}"
 SMTTY_APPLAUNCH_NAME="${SMTTY_APPLAUNCH_NAME:-}"
 
+# Persisted auto-launch selection (locked from main menu)
+SMTTY_LOCKED_GAME_FILE="$CONFIG_DIR/locked_game"
+
 # --- installed game picker paging ---
 SMTTY_GAME_PICKER_PAGE_SIZE_DEFAULT="${SMTTY_GAME_PICKER_PAGE_SIZE_DEFAULT:-20}"
 SMTTY_GAME_PICKER_PAGE_SIZE_MAX="${SMTTY_GAME_PICKER_PAGE_SIZE_MAX:-200}"
@@ -823,6 +826,113 @@ games.sort(key=lambda t: (t[0].lower(), t[1]))
 for name, appid in games:
     sys.stdout.write(f"{name}\t{appid}\n")
 PY2
+}
+
+smtty_lookup_installed_game_by_appid() {
+  local appid="${1:-}"
+  [[ -n "$appid" ]] || return 1
+  [[ "$appid" =~ ^[0-9]+$ ]] || return 1
+
+  local root
+  root="$(detect_steam_root 2>/dev/null)" || return 1
+
+  local name a
+  while IFS=$'	' read -r name a; do
+    [[ -n "$a" ]] || continue
+    if [[ "$a" == "$appid" ]]; then
+      printf '%s
+' "$name"
+      return 0
+    fi
+  done < <(list_installed_steam_games "$root" 2>/dev/null || true)
+
+  return 1
+}
+
+smtty_load_locked_game_if_any() {
+  # Only apply in interactive main menu. Never override an explicit selection.
+  [[ -n "${SMTTY_APPLAUNCH_APPID:-}" ]] && return 0
+  [[ -r "$SMTTY_LOCKED_GAME_FILE" ]] || return 0
+
+  local line
+  line="$(head -n1 "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null | tr -d '
+' || true)"
+  [[ -n "$line" ]] || { rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true; return 0; }
+
+  local name appid
+  if [[ "$line" == *$'	'* ]]; then
+    name="${line%%$'	'*}"
+    appid="${line##*$'	'}"
+  else
+    # Back-compat: allow appid-only file
+    appid="$line"
+    name=""
+  fi
+
+  if [[ -z "$appid" || ! "$appid" =~ ^[0-9]+$ ]]; then
+    rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
+    return 0
+  fi
+
+  local installed_name
+  installed_name="$(smtty_lookup_installed_game_by_appid "$appid" 2>/dev/null || true)"
+  if [[ -z "$installed_name" ]]; then
+    # Locked game no longer installed; clear lock and selection.
+    rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
+    SMTTY_APPLAUNCH_APPID=""
+    SMTTY_APPLAUNCH_NAME=""
+    export SMTTY_APPLAUNCH_APPID SMTTY_APPLAUNCH_NAME
+    return 0
+  fi
+
+  SMTTY_APPLAUNCH_APPID="$appid"
+  SMTTY_APPLAUNCH_NAME="$installed_name"
+  export SMTTY_APPLAUNCH_APPID SMTTY_APPLAUNCH_NAME
+
+  # Refresh lock file in case display name changed.
+  mkdir -p "$CONFIG_DIR"
+  printf '%s	%s
+' "$SMTTY_APPLAUNCH_NAME" "$SMTTY_APPLAUNCH_APPID" >"$SMTTY_LOCKED_GAME_FILE"
+  return 0
+}
+
+smtty_lock_selected_game() {
+  local appid="${SMTTY_APPLAUNCH_APPID:-}"
+  if [[ -z "$appid" ]]; then
+    echo "No game selected to lock. Use [G] first."
+    return 1
+  fi
+  [[ "$appid" =~ ^[0-9]+$ ]] || { echo "Invalid selected appid: $appid"; return 1; }
+
+  local installed_name
+  installed_name="$(smtty_lookup_installed_game_by_appid "$appid" 2>/dev/null || true)"
+  if [[ -z "$installed_name" ]]; then
+    echo "Selected game is no longer installed; clearing selection and lock."
+    rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
+    SMTTY_APPLAUNCH_APPID=""
+    SMTTY_APPLAUNCH_NAME=""
+    export SMTTY_APPLAUNCH_APPID SMTTY_APPLAUNCH_NAME
+    return 1
+  fi
+
+  SMTTY_APPLAUNCH_NAME="$installed_name"
+  export SMTTY_APPLAUNCH_NAME
+
+  mkdir -p "$CONFIG_DIR"
+  printf '%s	%s
+' "$SMTTY_APPLAUNCH_NAME" "$SMTTY_APPLAUNCH_APPID" >"$SMTTY_LOCKED_GAME_FILE"
+  echo "Locked: ${SMTTY_APPLAUNCH_NAME} (${SMTTY_APPLAUNCH_APPID})"
+  return 0
+}
+
+smtty_unlock_selected_game() {
+  if [[ -f "$SMTTY_LOCKED_GAME_FILE" ]]; then
+    rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
+    echo "Unlocked (will not persist on next run)."
+  else
+    echo "Already unlocked."
+  fi
+  return 0
 }
 
 pick_installed_steam_game() {
@@ -4640,6 +4750,7 @@ kill_gamescope() {
 }
 
 interactive_profile_menu() {
+  smtty_load_locked_game_if_any || true
   while :; do
     detect_session_mode
     init_default_refresh_for_output
@@ -4656,8 +4767,20 @@ interactive_profile_menu() {
       fi
     fi
     echo
+    local lock_state="unlocked"
+    [[ -f "$SMTTY_LOCKED_GAME_FILE" ]] && lock_state="LOCKED"
+    if [[ -n "${SMTTY_APPLAUNCH_APPID:-}" ]]; then
+      local disp_name="${SMTTY_APPLAUNCH_NAME:-}"
+      [[ -z "$disp_name" ]] && disp_name="appid ${SMTTY_APPLAUNCH_APPID}"
+      echo "Selected game: ${disp_name} (${SMTTY_APPLAUNCH_APPID}) [$lock_state]"
+    else
+      echo "Selected game: (none) [$lock_state]"
+    fi
+    echo
     echo "Options:"
     echo "  [G] Pick installed Steam game to auto-launch"
+    echo "  [L] Lock selected game (persist across runs)"
+    echo "  [U] Unlock selected game (stop persisting)"
     echo "  [D] Doctor (gamescope performance tips)"
     echo "  [C] Clear selected game"
     echo "  [V] Check smtty version"
@@ -4668,7 +4791,7 @@ interactive_profile_menu() {
     echo "  [b] Exit"
 
     local choice
-    if ! read_one_key choice "Choose option [G,C,D,V,1-4,b]: " ; then
+    if ! read_one_key choice "Choose option [G,L,U,C,D,V,1-4,b]: " ; then
       echo "Exiting."
       exit 0
     fi
@@ -4703,7 +4826,12 @@ interactive_profile_menu() {
         continue
         ;;
     [Gg])
-      pick_installed_steam_game || true
+      if pick_installed_steam_game; then
+        if [[ -f "$SMTTY_LOCKED_GAME_FILE" ]]; then
+          rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
+          echo "Lock cleared (press [L] to lock this selection)."
+        fi
+      fi
       ;;
     [Dd])
       echo
@@ -4711,10 +4839,17 @@ interactive_profile_menu() {
       echo
       read -r -p "Press Enter to return to menu..." _smtty_doc_pause || true
       ;;
+    [Ll])
+      smtty_lock_selected_game || true
+      ;;
+    [Uu])
+      smtty_unlock_selected_game || true
+      ;;
     [Cc])
       SMTTY_APPLAUNCH_APPID=""
       SMTTY_APPLAUNCH_NAME=""
       export SMTTY_APPLAUNCH_APPID SMTTY_APPLAUNCH_NAME
+      rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
       echo "Selected game cleared."
       ;;
     [Vv])
@@ -4724,7 +4859,7 @@ interactive_profile_menu() {
       read -r -p "Press Enter to return to menu..." _smtty_ver_pause || true
       ;;
       *)
-      echo "Enter G, C, D, V, 1, 2, 3, 4, or b."
+      echo "Enter G, L, U, C, D, V, 1, 2, 3, 4, or b."
         ;;
     esac
   done
