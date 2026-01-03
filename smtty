@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v12.1}"
+SMTTY_VERSION="${SMTTY_VERSION:-v12.2}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -4968,21 +4968,21 @@ interactive_profile_menu() {
     fi
 
     echo "Options:"
-    echo "  [G] [1] Pick installed Steam game to auto-launch"
-    echo "  [L] [2] Lock selected game (persist across runs)"
-    echo "  [U] [3] Unlock selected game (stop persisting)"
-    echo "  [M] [4] Toggle MangoHud (currently: ${mh_state})"
-    echo "  [H] [5] Helper tips (Doctor)"
-    echo "  [C] [6] Clear selected game"
-    echo "  [V] [7] Check smtty version"
-    echo "  [P] [8] Play this profile"
-    echo "  [S] [9] Select a profile"
-    echo "  [N] [10] New profile create"
+    echo "  [G] [1]  Pick installed Steam game to auto-launch"
+    echo "  [L] [2]  Lock selected game (persist across runs)"
+    echo "  [U] [3]  Unlock selected game (stop persisting)"
+    echo "  [M] [4]  Toggle MangoHud (currently: ${mh_state})"
+    echo "  [T] [5]  Gamescope tips (--doctor)"
+    echo "  [C] [6]  Clear selected game"
+    echo "  [V] [7]  Check smtty version"
+    echo "  [P] [8]  Play this profile"
+    echo "  [S] [9]  Select a profile"
+    echo "  [N] [10] Create new profile"
     echo "  [D] [11] Delete a profile"
     echo "  [b] Exit"
 
     local choice
-    if ! read_key_or_number choice "Choose option [G,L,U,M,H,C,V,P,S,N,D,1-11,b]: " ; then
+    if ! read_key_or_number choice "Choose option [G,L,U,M,T,C,V,P,S,N,D,1-11,b]: " ; then
       echo "Exiting."
       exit 0
     fi
@@ -5044,7 +5044,7 @@ interactive_profile_menu() {
           echo "Lock cleared. Use [L] to lock the selected game."
         fi
         ;;
-      h|5)
+      t|h|5)
         echo
         smtty_doctor
         echo
@@ -5074,7 +5074,7 @@ interactive_profile_menu() {
         exit 0
         ;;
       *)
-        echo "Enter G, L, U, M, H, C, V, P, S, N, D, 1-11, or b."
+        echo "Enter G, L, U, M, T, C, V, P, S, N, D, 1-11, or b."
         ;;
     esac
   done
