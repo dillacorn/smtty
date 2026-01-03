@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v12.2}"
+SMTTY_VERSION="${SMTTY_VERSION:-v12.3}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -349,56 +349,22 @@ print_success() {
   printf '%s[OK]%s %s\n' "$GREEN" "$NC" "$*"
 }
 
-# SMTTY_UI_GAP_PATCH_BEGIN
-# Terminal UI readability: add spacing between full menu re-renders.
-# Controls (optional):
-#   SMTTY_UI_MENU_GAP_LINES=2        # blank lines before re-render (0+)
-#   SMTTY_UI_MENU_GAP_SEPARATOR=0    # 0/1 print separator line (default 0 = invisible)
-#   SMTTY_UI_MENU_CLEAR=0            # 0/1 clear screen instead of blank lines
+# SMTTY_UI_MENU_CLEAR_PATCH_BEGIN
+# Terminal UI: clear screen before re-rendering interactive menus.
+# Control (optional):
+#   SMTTY_UI_MENU_CLEAR=0   # disable clearing (default: enabled)
 smtty_ui_menu_break() {
-  local gap_lines="${SMTTY_UI_MENU_GAP_LINES:-2}"
-  local do_sep="${SMTTY_UI_MENU_GAP_SEPARATOR:-0}"
-  local do_clear="${SMTTY_UI_MENU_CLEAR:-0}"
+  local do_clear="${SMTTY_UI_MENU_CLEAR:-1}"
+  [[ "$do_clear" == "0" ]] && return 0
+  [[ -t 1 ]] || return 0
 
-  if [[ ! "$gap_lines" =~ ^[0-9]+$ ]]; then
-    gap_lines=2
-  fi
-  if [[ ! "$do_sep" =~ ^[0-9]+$ ]]; then
-    do_sep=0
-  fi
-  if [[ ! "$do_clear" =~ ^[0-9]+$ ]]; then
-    do_clear=0
-  fi
-
-  if (( do_clear )); then
-    if command -v tput >/dev/null 2>&1 && [[ -t 1 ]]; then
-      tput clear 2>/dev/null || printf '\033[2J\033[H' || true
-    else
-      printf '\033[2J\033[H' || true
-    fi
-    return 0
-  fi
-
-  local i
-  for (( i = 0; i < gap_lines; i++ )); do
-    echo
-  done
-
-  if (( do_sep )); then
-    local cols=80
-    if command -v tput >/dev/null 2>&1 && [[ -t 1 ]]; then
-      cols="$(tput cols 2>/dev/null || echo 80)"
-    elif [[ -n "${COLUMNS:-}" && "${COLUMNS:-}" =~ ^[0-9]+$ ]]; then
-      cols="$COLUMNS"
-    fi
-    [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
-    (( cols < 40 )) && cols=40
-    (( cols > 200 )) && cols=200
-    printf '%*s\n' "$cols" '' | tr ' ' '-'
-    echo
+  if command -v tput >/dev/null 2>&1 && [[ -n "${TERM:-}" && "${TERM:-}" != "dumb" ]]; then
+    tput clear 2>/dev/null || true
+  else
+    printf '[2J[H' 2>/dev/null || true
   fi
 }
-# SMTTY_UI_GAP_PATCH_END
+# SMTTY_UI_MENU_CLEAR_PATCH_END
 
 
 
@@ -1013,6 +979,7 @@ pick_installed_steam_game() {
   local page=0
 
   while :; do
+    smtty_ui_menu_break
     # SMTTY_FIND_PATCH_BEGIN
     if (( __smtty_find_inited == 0 )); then
       __smtty_find_all=("${games[@]}")
@@ -1049,7 +1016,6 @@ pick_installed_steam_game() {
     (( end > total )) && end=$total
     local on_page=$(( end - start ))
 
-    echo
     echo "Installed Steam games (page $((page + 1))/$pages, showing $((start + 1))-$end of $total, page size $page_size):"
     echo
 
@@ -4931,12 +4897,8 @@ kill_gamescope() {
 
 interactive_profile_menu() {
   smtty_load_locked_game_if_any || true
-  local __smtty_menu_iter=0
   while :; do
-    if (( __smtty_menu_iter > 0 )); then
-      smtty_ui_menu_break
-    fi
-    __smtty_menu_iter=$((__smtty_menu_iter + 1))
+    smtty_ui_menu_break
     detect_session_mode
     init_default_refresh_for_output
     print_config_summary
