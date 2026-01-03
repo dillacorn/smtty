@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v11.3}"
+SMTTY_VERSION="${SMTTY_VERSION:-v11.4}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -527,6 +527,8 @@ FLAG_KILL_STEAM=0     # -S: kill Steam client before launching (no prompt)
 FLAG_PIPE=0          # -P/-PIPE: run a single game command in gamescope (Steam Launch Options wrapper)
 FLAG_LIST_PROFILES=0  # -L: list available profiles
 FLAG_DELETE_PROFILE=0 # -D: delete a profile
+FLAG_PIPE_STEAM_INTEGRATION=0  # -e: pipe-mode only; enable gamescope Steam integration (-e/--steam)
+FLAG_MANGOHUD=0                # -M: wrap the launched command with MangoHud (mangohud --dlsym)
 SELECTED_PROFILE=""   # -c <profile>: use specific profile
 
 # back navigation
@@ -1263,6 +1265,8 @@ Options:
   -P        PIPE mode: run one game command in gamescope using the selected profile.
             Launch Options (native Steam):  smtty -c <profile> -PIPE -- %command%
             Launch Options (Steam Flatpak): flatpak-spawn --host smtty -c <profile> -PIPE -- %command%
+  -e        PIPE mode: enable gamescope Steam integration (-e/--steam) for Steam overlay/input.
+  -M        Wrap the launched command with MangoHud (mangohud --dlsym). Requires mangohud installed.
   --        (Gamepad UI) Optional Steam args to append to Steam-in-gamescope.
             Example: smtty -c <profile> -- -applaunch 730
                      smtty -c <profile> -- steam -applaunch 730 -tenfoot
@@ -1811,6 +1815,34 @@ detect_session_mode() {
     SESSION_MODE="kms"
   fi
 }
+
+
+# SMTTY_HYPR_FOCUS_GAMESCOPE_BEGIN
+smtty_hypr_focus_gamescope_pid() {
+  # In Hyprland nested sessions, window rules can silently shove the gamescope window to another workspace.
+  # This attempts to move it back to the currently active workspace and focus it.
+  local pid="${1:-}"
+
+  [[ "${SMTTY_HYPR_FOCUS_GAMESCOPE:-1}" == "1" ]] || return 0
+  [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] || return 0
+
+  [[ -n "${HYPRLAND_INSTANCE_SIGNATURE-}" ]] || return 0
+  command -v hyprctl >/dev/null 2>&1 || return 0
+
+  local wsid=""
+  wsid="$(hyprctl activeworkspace -j 2>/dev/null | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' | head -n1 || true)"
+  [[ -n "$wsid" && "$wsid" =~ ^[0-9]+$ ]] || return 0
+
+  local i
+  for i in {1..30}; do
+    hyprctl dispatch movetoworkspacesilent "${wsid},pid:${pid}" >/dev/null 2>&1 || true
+    hyprctl dispatch focuswindow "pid:${pid}" >/dev/null 2>&1 || true
+    sleep 0.05
+  done
+
+  return 0
+}
+# SMTTY_HYPR_FOCUS_GAMESCOPE_END
 
 # ---------------- NVIDIA + Flatpak GBM autodetect ----------------
 
@@ -3155,6 +3187,13 @@ launch_gamescope_payload() {
   # Wrap the provided command in gamescope using the currently loaded profile settings.
   local -a inner_cmd=("$@")
 
+  # SMTTY_MANGOHUD_WRAP_PAYLOAD
+  if (( FLAG_MANGOHUD )); then
+    if [[ "${inner_cmd[0]:-}" != "mangohud" ]]; then
+      inner_cmd=(mangohud --dlsym "${inner_cmd[@]}")
+    fi
+  fi
+
   local args=()
   args+=(-f)
 
@@ -3259,6 +3298,12 @@ launch_gamescope_payload() {
 
   "${gs_exec[@]}" "${args[@]}" -- "${inner_cmd[@]}" &
   gspid=$!
+
+  # SMTTY_HYPR_FOCUS_AFTER_LAUNCH_BEGIN
+  if [[ "$SESSION_MODE" == "nested" ]]; then
+    smtty_hypr_focus_gamescope_pid "$gspid" || true
+  fi
+  # SMTTY_HYPR_FOCUS_AFTER_LAUNCH_END
 
   write_session_state "$gspid"
   audio_switch_start_for_pid "$gspid"
@@ -3568,6 +3613,7 @@ pkg_for_cmd() {
         script|setsid) echo "util-linux" ;;
         pactl)     echo "pulseaudio-utils" ;;
         modetest)  echo "libdrm-tests" ;;
+        mangohud)  echo "mangohud" ;;
         *)         echo "" ;;
       esac
       ;;
@@ -3584,6 +3630,7 @@ pkg_for_cmd() {
         script|setsid) echo "util-linux" ;;
         pactl)     echo "pulseaudio-utils" ;;
         modetest)  echo "drm-utils" ;;
+        mangohud)  echo "mangohud" ;;
         *)         echo "" ;;
       esac
       ;;
@@ -3600,6 +3647,7 @@ pkg_for_cmd() {
         script|setsid) echo "util-linux" ;;
         pactl)     echo "libpulse" ;;
         modetest)  echo "libdrm" ;;
+        mangohud)  echo "mangohud" ;;
         *)         echo "" ;;
       esac
       ;;
@@ -3616,6 +3664,7 @@ pkg_for_cmd() {
         script|setsid) echo "util-linux" ;;
         pactl)     echo "pulseaudio-utils" ;;
         modetest)  echo "libdrm-tools" ;;
+        mangohud)  echo "mangohud" ;;
         *)         echo "" ;;
       esac
       ;;
@@ -3731,6 +3780,10 @@ check_deps() {
 
   # Hard required for launching.
   require_cmd gamescope
+
+  if (( FLAG_MANGOHUD )); then
+    require_cmd mangohud
+  fi
 
   local need_flatpak_steam_app=0
 
@@ -4246,6 +4299,13 @@ launch_gamescope_session() {
   local inner_label="Steam Gamepad UI (Big Picture)"
 
   inner_cmd=("${STEAM_CMD_ARR[@]}")
+
+  # SMTTY_MANGOHUD_WRAP_SESSION
+  if (( FLAG_MANGOHUD )); then
+    if [[ "${inner_cmd[0]:-}" != "mangohud" ]]; then
+      inner_cmd=(mangohud --dlsym "${inner_cmd[@]}")
+    fi
+  fi
 
 
   # CLI payload after `--`:
@@ -4777,10 +4837,16 @@ interactive_profile_menu() {
       echo "Selected game: (none) [$lock_state]"
     fi
     echo
+    local mh_state="OFF"
+    if (( FLAG_MANGOHUD )); then
+      mh_state="ON"
+    fi
+
     echo "Options:"
     echo "  [G] Pick installed Steam game to auto-launch"
     echo "  [L] Lock selected game (persist across runs)"
     echo "  [U] Unlock selected game (stop persisting)"
+    echo "  [M] Toggle MangoHud (currently: ${mh_state})"
     echo "  [D] Doctor (gamescope performance tips)"
     echo "  [C] Clear selected game"
     echo "  [V] Check smtty version"
@@ -4791,11 +4857,33 @@ interactive_profile_menu() {
     echo "  [b] Exit"
 
     local choice
-    if ! read_one_key choice "Choose option [G,L,U,C,D,V,1-4,b]: " ; then
+    if ! read_one_key choice "Choose option [G,L,U,M,C,D,V,1-4,b]: " ; then
       echo "Exiting."
       exit 0
     fi
     case "$choice" in
+      [Mm])
+        if (( FLAG_MANGOHUD )); then
+          FLAG_MANGOHUD=0
+          echo "MangoHud: OFF"
+        else
+          if command -v mangohud >/dev/null 2>&1; then
+            FLAG_MANGOHUD=1
+            echo "MangoHud: ON"
+          else
+            detect_pkg_manager
+            local pkg=""
+            pkg="$(pkg_for_cmd mangohud || true)"
+            echo "[ERROR] MangoHud is not installed."
+            if [[ -n "$pkg" ]]; then
+              echo "Install it and try again: $pkg"
+            else
+              echo "Install it and try again: mangohud"
+            fi
+            FLAG_MANGOHUD=0
+          fi
+        fi
+        ;;
       1)
         run_from_current_config
         ;;
@@ -4898,7 +4986,7 @@ if (( $# > 0 )); then
   set -- "${_argv[@]}"
 fi
 
-while getopts ":hnlpkdOPSc:LD:" opt; do
+while getopts ":hnlpkdOPSeMc:LD:" opt; do
   case "$opt" in
     h) FLAG_HELP=1 ;;
     n) FLAG_NEW=1 ;;
@@ -4909,6 +4997,8 @@ while getopts ":hnlpkdOPSc:LD:" opt; do
     O) FLAG_LAUNCH_OPTS=1 ;;
     P) FLAG_PIPE=1 ;;
     S) FLAG_KILL_STEAM=1 ;;
+    e) FLAG_PIPE_STEAM_INTEGRATION=1 ;;
+    M) FLAG_MANGOHUD=1 ;;
     c) SELECTED_PROFILE="$OPTARG" ;;
     L) FLAG_LIST_PROFILES=1 ;;
     D) FLAG_DELETE_PROFILE=1; SELECTED_PROFILE="$OPTARG" ;;
@@ -4917,6 +5007,10 @@ while getopts ":hnlpkdOPSc:LD:" opt; do
   esac
 done
 shift $((OPTIND - 1))
+
+if (( FLAG_PIPE_STEAM_INTEGRATION )); then
+  export SMTTY_PIPE_STEAM_INTEGRATION=1
+fi
 
 if (( FLAG_HELP )); then
   print_help
