@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v11.4}"
+SMTTY_VERSION="${SMTTY_VERSION:-v11.5}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -348,6 +348,58 @@ print_info() {
 print_success() {
   printf '%s[OK]%s %s\n' "$GREEN" "$NC" "$*"
 }
+
+# SMTTY_UI_GAP_PATCH_BEGIN
+# Terminal UI readability: add spacing between full menu re-renders.
+# Controls (optional):
+#   SMTTY_UI_MENU_GAP_LINES=2        # blank lines before re-render (0+)
+#   SMTTY_UI_MENU_GAP_SEPARATOR=0    # 0/1 print separator line (default 0 = invisible)
+#   SMTTY_UI_MENU_CLEAR=0            # 0/1 clear screen instead of blank lines
+smtty_ui_menu_break() {
+  local gap_lines="${SMTTY_UI_MENU_GAP_LINES:-2}"
+  local do_sep="${SMTTY_UI_MENU_GAP_SEPARATOR:-0}"
+  local do_clear="${SMTTY_UI_MENU_CLEAR:-0}"
+
+  if [[ ! "$gap_lines" =~ ^[0-9]+$ ]]; then
+    gap_lines=2
+  fi
+  if [[ ! "$do_sep" =~ ^[0-9]+$ ]]; then
+    do_sep=0
+  fi
+  if [[ ! "$do_clear" =~ ^[0-9]+$ ]]; then
+    do_clear=0
+  fi
+
+  if (( do_clear )); then
+    if command -v tput >/dev/null 2>&1 && [[ -t 1 ]]; then
+      tput clear 2>/dev/null || printf '\033[2J\033[H' || true
+    else
+      printf '\033[2J\033[H' || true
+    fi
+    return 0
+  fi
+
+  local i
+  for (( i = 0; i < gap_lines; i++ )); do
+    echo
+  done
+
+  if (( do_sep )); then
+    local cols=80
+    if command -v tput >/dev/null 2>&1 && [[ -t 1 ]]; then
+      cols="$(tput cols 2>/dev/null || echo 80)"
+    elif [[ -n "${COLUMNS:-}" && "${COLUMNS:-}" =~ ^[0-9]+$ ]]; then
+      cols="$COLUMNS"
+    fi
+    [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
+    (( cols < 40 )) && cols=40
+    (( cols > 200 )) && cols=200
+    printf '%*s\n' "$cols" '' | tr ' ' '-'
+    echo
+  fi
+}
+# SMTTY_UI_GAP_PATCH_END
+
 
 
 smtty_doctor() {
@@ -4811,7 +4863,12 @@ kill_gamescope() {
 
 interactive_profile_menu() {
   smtty_load_locked_game_if_any || true
+  local __smtty_menu_iter=0
   while :; do
+    if (( __smtty_menu_iter > 0 )); then
+      smtty_ui_menu_break
+    fi
+    __smtty_menu_iter=$((__smtty_menu_iter + 1))
     detect_session_mode
     init_default_refresh_for_output
     print_config_summary
