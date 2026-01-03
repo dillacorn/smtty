@@ -1202,6 +1202,60 @@ read_one_key() {
   return 0
 }
 
+read_key_or_number() {
+  # read_key_or_number <var_name> <prompt>
+  # - Letters: one key (no Enter)
+  # - Numbers: type digits then press Enter (supports 10, 11, etc.)
+  # Returns 1 if the user pressed 'b' (or 'B').
+  local __var_name="$1"
+  local __prompt="$2"
+  local __ch=""
+  local __buf=""
+
+  printf '%s' "$__prompt"
+  IFS= read -rsn1 __ch || exit 1
+
+  if [[ "${__ch}" == $'\r' || "${__ch}" == $'\n' ]]; then
+    __ch=""
+  fi
+
+  if [[ "${__ch}" == "B" ]]; then
+    __ch="b"
+  fi
+
+  if [[ "${__ch}" == "b" ]]; then
+    printf '\n'
+    return 1
+  fi
+
+  if [[ "${__ch}" =~ [0-9] ]]; then
+    __buf="$__ch"
+    while IFS= read -rsn1 __ch; do
+      if [[ "${__ch}" == $'\r' || "${__ch}" == $'\n' ]]; then
+        break
+      fi
+
+      # Backspace/delete
+      if [[ "${__ch}" == $'\177' || "${__ch}" == $'\b' ]]; then
+        __buf="${__buf%?}"
+        continue
+      fi
+
+      if [[ "${__ch}" =~ [0-9] ]]; then
+        __buf+="$__ch"
+      fi
+    done
+
+    printf '\n'
+    printf -v "$__var_name" '%s' "$__buf"
+    return 0
+  fi
+
+  printf '\n'
+  printf -v "$__var_name" '%s' "$__ch"
+  return 0
+}
+
 prompt_select() {
   local prompt=$1
   shift
@@ -4900,26 +4954,29 @@ interactive_profile_menu() {
     fi
 
     echo "Options:"
-    echo "  [G] Pick installed Steam game to auto-launch"
-    echo "  [L] Lock selected game (persist across runs)"
-    echo "  [U] Unlock selected game (stop persisting)"
-    echo "  [M] Toggle MangoHud (currently: ${mh_state})"
-    echo "  [D] Doctor (gamescope performance tips)"
-    echo "  [C] Clear selected game"
-    echo "  [V] Check smtty version"
-    echo "  [1] Use this profile"
-    echo "  [2] Select a different profile"
-    echo "  [3] Create new profile"
-    echo "  [4] Delete a profile"
+    echo "  [G] [1] Pick installed Steam game to auto-launch"
+    echo "  [L] [2] Lock selected game (persist across runs)"
+    echo "  [U] [3] Unlock selected game (stop persisting)"
+    echo "  [M] [4] Toggle MangoHud (currently: ${mh_state})"
+    echo "  [H] [5] Helper tips (Doctor)"
+    echo "  [C] [6] Clear selected game"
+    echo "  [V] [7] Check smtty version"
+    echo "  [P] [8] Play this profile"
+    echo "  [S] [9] Select a profile"
+    echo "  [N] [10] New profile create"
+    echo "  [D] [11] Delete a profile"
     echo "  [b] Exit"
 
     local choice
-    if ! read_one_key choice "Choose option [G,L,U,M,C,D,V,1-4,b]: " ; then
+    if ! read_key_or_number choice "Choose option [G,L,U,M,H,C,V,P,S,N,D,1-11,b]: " ; then
       echo "Exiting."
       exit 0
     fi
+    choice="${choice//[[:space:]]/}"
+    choice="${choice,,}"
+    [[ -z "$choice" ]] && continue
     case "$choice" in
-      [Mm])
+      m|4)
         if (( FLAG_MANGOHUD )); then
           FLAG_MANGOHUD=0
           echo "MangoHud: OFF"
@@ -4933,36 +4990,32 @@ interactive_profile_menu() {
             pkg="$(pkg_for_cmd mangohud || true)"
             echo "[ERROR] MangoHud is not installed."
             if [[ -n "$pkg" ]]; then
-              echo "Install it and try again: $pkg"
+              echo "Install it with: ${PKG_INSTALL_CMD} $pkg"
             else
-              echo "Install it and try again: mangohud"
+              echo "Install MangoHud (package name may vary by distro)."
             fi
-            FLAG_MANGOHUD=0
           fi
         fi
         ;;
-      1)
+      p|8)
         run_from_current_config
         ;;
-      2)
+      s|9)
         if select_profile_interactive "use"; then
-          # Load/switch profile only. Do NOT auto-launch.
-          # This lets the user review the loaded settings, then choose [1] to launch,
-          # or exit and run `smtty -O` to generate launch options for this profile.
-          load_profile_by_name "$CURRENT_PROFILE" || true
+          echo "Switched to profile: ${CURRENT_PROFILE}"
+          # user can choose [P] to launch the current profile.
         else
-          echo "No other profiles available or selection cancelled."
+          echo "No profiles available."
         fi
         continue
         ;;
-      3)
+      n|10)
         if ! interactive_new_config 1; then
           continue
         fi
         continue
         ;;
-
-      4)
+      d|11)
         if select_profile_interactive "delete"; then
           delete_profile "$CURRENT_PROFILE" || true
         else
@@ -4970,41 +5023,44 @@ interactive_profile_menu() {
         fi
         continue
         ;;
-    [Gg])
-      if pick_installed_steam_game; then
-        if [[ -f "$SMTTY_LOCKED_GAME_FILE" ]]; then
+      g|1)
+        if pick_installed_steam_game; then
+          echo "Selected game: ${SMTTY_APPLAUNCH_NAME} (${SMTTY_APPLAUNCH_APPID})"
           rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
-          echo "Lock cleared (press [L] to lock this selection)."
+          echo "Lock cleared. Use [L] to lock the selected game."
         fi
-      fi
-      ;;
-    [Dd])
-      echo
-      smtty_doctor
-      echo
-      read -r -p "Press Enter to return to menu..." _smtty_doc_pause || true
-      ;;
-    [Ll])
-      smtty_lock_selected_game || true
-      ;;
-    [Uu])
-      smtty_unlock_selected_game || true
-      ;;
-    [Cc])
-      SMTTY_APPLAUNCH_APPID=""
-      SMTTY_APPLAUNCH_NAME=""
-      export SMTTY_APPLAUNCH_APPID SMTTY_APPLAUNCH_NAME
-      rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
-      echo "Selected game cleared."
-      ;;
-    [Vv])
-      echo
-      smtty_print_version
-      echo
-      read -r -p "Press Enter to return to menu..." _smtty_ver_pause || true
-      ;;
+        ;;
+      h|5)
+        echo
+        smtty_doctor
+        echo
+        read -r -p "Press Enter to return to menu..." _smtty_doc_pause || true
+        ;;
+      l|2)
+        smtty_lock_selected_game || true
+        ;;
+      u|3)
+        smtty_unlock_selected_game || true
+        ;;
+      c|6)
+        SMTTY_APPLAUNCH_APPID=""
+        SMTTY_APPLAUNCH_NAME=""
+        export SMTTY_APPLAUNCH_APPID SMTTY_APPLAUNCH_NAME
+        rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
+        echo "Selected game cleared."
+        ;;
+      v|7)
+        echo
+        smtty_print_version
+        echo
+        read -r -p "Press Enter to return to menu..." _smtty_ver_pause || true
+        ;;
+      b)
+        echo "Exiting."
+        exit 0
+        ;;
       *)
-      echo "Enter G, L, U, C, D, V, 1, 2, 3, 4, or b."
+        echo "Enter G, L, U, M, H, C, V, P, S, N, D, 1-11, or b."
         ;;
     esac
   done
