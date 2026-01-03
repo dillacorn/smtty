@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v12.0}"
+SMTTY_VERSION="${SMTTY_VERSION:-v12.1}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -1205,12 +1205,14 @@ read_one_key() {
 read_key_or_number() {
   # read_key_or_number <var_name> <prompt>
   # - Letters: one key (no Enter)
-  # - Numbers: type digits then press Enter (supports 10, 11, etc.)
+  # - Numbers: 1-9 trigger immediately (no Enter)
+  # - 10/11: press 1 then 0/1 quickly (timeout), or type 10/11 then Enter
   # Returns 1 if the user pressed 'b' (or 'B').
   local __var_name="$1"
   local __prompt="$2"
   local __ch=""
   local __buf=""
+  local __next=""
 
   printf '%s' "$__prompt"
   IFS= read -rsn1 __ch || exit 1
@@ -1230,21 +1232,32 @@ read_key_or_number() {
 
   if [[ "${__ch}" =~ [0-9] ]]; then
     __buf="$__ch"
-    while IFS= read -rsn1 __ch; do
-      if [[ "${__ch}" == $'\r' || "${__ch}" == $'\n' ]]; then
-        break
-      fi
 
-      # Backspace/delete
-      if [[ "${__ch}" == $'\177' || "${__ch}" == $'\b' ]]; then
-        __buf="${__buf%?}"
-        continue
-      fi
+    # Fast path: 2-9 are unambiguous and should act immediately.
+    if [[ "${__buf}" != "1" ]]; then
+      printf '\n'
+      printf -v "$__var_name" '%s' "$__buf"
+      return 0
+    fi
 
-      if [[ "${__ch}" =~ [0-9] ]]; then
-        __buf+="$__ch"
+    # If first digit is 1, it might be 1, 10, or 11.
+    # Wait briefly for a second digit; if none arrives, treat as "1".
+    if IFS= read -rsn1 -t 0.75 __next; then
+      if [[ "${__next}" =~ [0-9] ]]; then
+        __buf+="${__next}"
+        # If user keeps typing (e.g., "10" + Enter), consume any additional digits quickly,
+        # then stop on Enter. This prevents a stray "0" sitting in the input buffer.
+        while IFS= read -rsn1 -t 0.10 __next; do
+          if [[ "${__next}" == $'\r' || "${__next}" == $'\n' ]]; then
+            break
+          fi
+          if [[ "${__next}" =~ [0-9] ]]; then
+            __buf+="${__next}"
+          fi
+        done
       fi
-    done
+      # If __next was Enter or non-digit, ignore it and keep __buf as "1".
+    fi
 
     printf '\n'
     printf -v "$__var_name" '%s' "$__buf"
@@ -1255,6 +1268,7 @@ read_key_or_number() {
   printf -v "$__var_name" '%s' "$__ch"
   return 0
 }
+
 
 prompt_select() {
   local prompt=$1
