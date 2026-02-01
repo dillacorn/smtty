@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v12.3}"
+SMTTY_VERSION="${SMTTY_VERSION:-v12.4}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -1903,6 +1903,26 @@ detect_session_mode() {
 }
 
 
+
+# SMTTY_GAMESCOPE_WINDOWFLAG_BEGIN
+smtty_append_gamescope_window_flag() {
+  # In Hyprland nested sessions, gamescope -f can get sized to compositor workarea
+  # (bars/gaps/scaling), and games may treat that as the "desktop" resolution.
+  # Use -b under Hyprland nested and force Hyprland fullscreenstate afterward.
+  local -n _arr="$1"
+
+  local flag='-f'
+  if [[ "${SESSION_MODE:-}" == "nested" ]] \
+    && [[ -n "${HYPRLAND_INSTANCE_SIGNATURE-}" ]] \
+    && [[ "${SMTTY_HYPR_FULLSCREEN_GAMESCOPE:-1}" == "1" ]]; then
+    flag='-b'
+  fi
+
+  _arr+=("$flag")
+}
+# SMTTY_GAMESCOPE_WINDOWFLAG_END
+
+
 # SMTTY_HYPR_FOCUS_GAMESCOPE_BEGIN
 smtty_hypr_focus_gamescope_pid() {
   # In Hyprland nested sessions, window rules can silently shove the gamescope window to another workspace.
@@ -1929,6 +1949,46 @@ smtty_hypr_focus_gamescope_pid() {
   return 0
 }
 # SMTTY_HYPR_FOCUS_GAMESCOPE_END
+
+
+# SMTTY_HYPR_FULLSCREEN_GAMESCOPE_BEGIN
+smtty_hypr_fullscreen_gamescope_pid() {
+  # Force Hyprland fullscreen *state* for the gamescope PID (set-state, not toggle).
+  local pid="${1:-}"
+
+  [[ "${SMTTY_HYPR_FULLSCREEN_GAMESCOPE:-1}" == "1" ]] || return 0
+  [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] || return 0
+
+  [[ -n "${HYPRLAND_INSTANCE_SIGNATURE-}" ]] || return 0
+  command -v hyprctl >/dev/null 2>&1 || return 0
+
+  local wsid
+  wsid="$(hyprctl activeworkspace -j 2>/dev/null | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' | head -n1 || true)"
+  [[ -n "$wsid" && "$wsid" =~ ^[0-9]+$ ]] || return 0
+
+  local i awpid awfs
+  for i in {1..60}; do
+    hyprctl dispatch movetoworkspacesilent "${wsid},pid:${pid}" >/dev/null 2>&1 || true
+    hyprctl dispatch focuswindow "pid:${pid}" >/dev/null 2>&1 || true
+
+    # 2 2 = fullscreen for both internal + client (set-state, stable).
+    hyprctl dispatch fullscreenstate 2 2 >/dev/null 2>&1 || true
+
+    awpid="$(hyprctl activewindow -j 2>/dev/null | sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' | head -n1 || true)"
+    awfs="$(hyprctl activewindow -j 2>/dev/null | sed -n 's/.*"fullscreen"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' | head -n1 || true)"
+
+    if [[ "$awpid" == "$pid" ]] && [[ "$awfs" == "2" ]]; then
+      return 0
+    fi
+
+    sleep 0.05
+  done
+
+  return 0
+}
+# SMTTY_HYPR_FULLSCREEN_GAMESCOPE_END
+
+
 
 # ---------------- NVIDIA + Flatpak GBM autodetect ----------------
 
@@ -3131,7 +3191,7 @@ print_steam_launch_options() {
   detect_session_mode
 
   local args=()
-  args+=(-f)
+  smtty_append_gamescope_window_flag args
   args+=(-W "$NATIVE_W" -H "$NATIVE_H")
   args+=(-w "$GAME_W" -h "$GAME_H")
 
@@ -3281,8 +3341,7 @@ launch_gamescope_payload() {
   fi
 
   local args=()
-  args+=(-f)
-
+  smtty_append_gamescope_window_flag args
   # Optional: enable gamescope Steam integration (-e) in PIPE mode
   # Export before running Steam launch options if you want it:
   #   SMTTY_PIPE_STEAM_INTEGRATION=1
@@ -3388,6 +3447,7 @@ launch_gamescope_payload() {
   # SMTTY_HYPR_FOCUS_AFTER_LAUNCH_BEGIN
   if [[ "$SESSION_MODE" == "nested" ]]; then
     smtty_hypr_focus_gamescope_pid "$gspid" || true
+    smtty_hypr_fullscreen_gamescope_pid "$gspid" || true
   fi
   # SMTTY_HYPR_FOCUS_AFTER_LAUNCH_END
 
@@ -4170,7 +4230,8 @@ launch_vanilla_gamescope() {
   local inner_cmd=("$@")
 
   local args=()
-  args+=(-f -e)
+  smtty_append_gamescope_window_flag args
+  args+=(-e)
   args+=(-W "$NATIVE_W" -H "$NATIVE_H")
   args+=(-w "$GAME_W" -h "$GAME_H")
 
