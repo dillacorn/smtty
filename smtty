@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v12.7}"
+SMTTY_VERSION="${SMTTY_VERSION:-v12.8}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -4888,8 +4888,12 @@ interactive_profile_menu() {
       echo "Tip: Desktop Steam Launch Options for this profile:"
       if [[ "${STEAM_TYPE:-native}" == "flatpak" ]]; then
         echo "  flatpak-spawn --host smtty -c ${prof} -P -- %command%"
+        echo "  flatpak-spawn --host smtty -c ${prof} -P -- gamemoderun %command%"
+        echo "  PROTON_ENABLE_WAYLAND=1 PROTON_FSR4_RDNA3_UPGRADE=1 flatpak-spawn --host smtty -c ${prof} -P -- gamemoderun %command%"
       else
         echo "  smtty -c ${prof} -P -- %command%"
+        echo "  smtty -c ${prof} -P -- gamemoderun %command%"
+        echo "  PROTON_ENABLE_WAYLAND=1 PROTON_FSR4_RDNA3_UPGRADE=1 smtty -c ${prof} -P -- gamemoderun %command%"
       fi
     fi
     echo
