@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v12.4}"
+SMTTY_VERSION="${SMTTY_VERSION:-v12.7}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -1906,87 +1906,12 @@ detect_session_mode() {
 
 # SMTTY_GAMESCOPE_WINDOWFLAG_BEGIN
 smtty_append_gamescope_window_flag() {
-  # In Hyprland nested sessions, gamescope -f can get sized to compositor workarea
-  # (bars/gaps/scaling), and games may treat that as the "desktop" resolution.
-  # Use -b under Hyprland nested and force Hyprland fullscreenstate afterward.
+  # Always prefer true fullscreen (-f). Hyprland-specific focus/fullscreen hooks are removed.
   local -n _arr="$1"
-
-  local flag='-f'
-  if [[ "${SESSION_MODE:-}" == "nested" ]] \
-    && [[ -n "${HYPRLAND_INSTANCE_SIGNATURE-}" ]] \
-    && [[ "${SMTTY_HYPR_FULLSCREEN_GAMESCOPE:-1}" == "1" ]]; then
-    flag='-b'
-  fi
-
-  _arr+=("$flag")
+  _arr+=(-f)
 }
 # SMTTY_GAMESCOPE_WINDOWFLAG_END
 
-
-# SMTTY_HYPR_FOCUS_GAMESCOPE_BEGIN
-smtty_hypr_focus_gamescope_pid() {
-  # In Hyprland nested sessions, window rules can silently shove the gamescope window to another workspace.
-  # This attempts to move it back to the currently active workspace and focus it.
-  local pid="${1:-}"
-
-  [[ "${SMTTY_HYPR_FOCUS_GAMESCOPE:-1}" == "1" ]] || return 0
-  [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] || return 0
-
-  [[ -n "${HYPRLAND_INSTANCE_SIGNATURE-}" ]] || return 0
-  command -v hyprctl >/dev/null 2>&1 || return 0
-
-  local wsid=""
-  wsid="$(hyprctl activeworkspace -j 2>/dev/null | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' | head -n1 || true)"
-  [[ -n "$wsid" && "$wsid" =~ ^[0-9]+$ ]] || return 0
-
-  local i
-  for i in {1..30}; do
-    hyprctl dispatch movetoworkspacesilent "${wsid},pid:${pid}" >/dev/null 2>&1 || true
-    hyprctl dispatch focuswindow "pid:${pid}" >/dev/null 2>&1 || true
-    sleep 0.05
-  done
-
-  return 0
-}
-# SMTTY_HYPR_FOCUS_GAMESCOPE_END
-
-
-# SMTTY_HYPR_FULLSCREEN_GAMESCOPE_BEGIN
-smtty_hypr_fullscreen_gamescope_pid() {
-  # Force Hyprland fullscreen *state* for the gamescope PID (set-state, not toggle).
-  local pid="${1:-}"
-
-  [[ "${SMTTY_HYPR_FULLSCREEN_GAMESCOPE:-1}" == "1" ]] || return 0
-  [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] || return 0
-
-  [[ -n "${HYPRLAND_INSTANCE_SIGNATURE-}" ]] || return 0
-  command -v hyprctl >/dev/null 2>&1 || return 0
-
-  local wsid
-  wsid="$(hyprctl activeworkspace -j 2>/dev/null | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' | head -n1 || true)"
-  [[ -n "$wsid" && "$wsid" =~ ^[0-9]+$ ]] || return 0
-
-  local i awpid awfs
-  for i in {1..60}; do
-    hyprctl dispatch movetoworkspacesilent "${wsid},pid:${pid}" >/dev/null 2>&1 || true
-    hyprctl dispatch focuswindow "pid:${pid}" >/dev/null 2>&1 || true
-
-    # 2 2 = fullscreen for both internal + client (set-state, stable).
-    hyprctl dispatch fullscreenstate 2 2 >/dev/null 2>&1 || true
-
-    awpid="$(hyprctl activewindow -j 2>/dev/null | sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' | head -n1 || true)"
-    awfs="$(hyprctl activewindow -j 2>/dev/null | sed -n 's/.*"fullscreen"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' | head -n1 || true)"
-
-    if [[ "$awpid" == "$pid" ]] && [[ "$awfs" == "2" ]]; then
-      return 0
-    fi
-
-    sleep 0.05
-  done
-
-  return 0
-}
-# SMTTY_HYPR_FULLSCREEN_GAMESCOPE_END
 
 
 
@@ -3443,13 +3368,6 @@ launch_gamescope_payload() {
 
   "${gs_exec[@]}" "${args[@]}" -- "${inner_cmd[@]}" &
   gspid=$!
-
-  # SMTTY_HYPR_FOCUS_AFTER_LAUNCH_BEGIN
-  if [[ "$SESSION_MODE" == "nested" ]]; then
-    smtty_hypr_focus_gamescope_pid "$gspid" || true
-    smtty_hypr_fullscreen_gamescope_pid "$gspid" || true
-  fi
-  # SMTTY_HYPR_FOCUS_AFTER_LAUNCH_END
 
   write_session_state "$gspid"
   audio_switch_start_for_pid "$gspid"
@@ -5002,10 +4920,11 @@ interactive_profile_menu() {
     echo "  [S] [9]  Select a profile"
     echo "  [N] [10] Create new profile"
     echo "  [D] [11] Delete a profile"
+    echo "  [O] [12] Steam launch options for this profile"
     echo "  [b] Exit"
 
     local choice
-    if ! read_key_or_number choice "Choose option [G,L,U,M,T,C,V,P,S,N,D,1-11,b]: " ; then
+    if ! read_key_or_number choice "Choose option [G,L,U,M,T,C,V,P,S,N,D,O,1-12,b]: " ; then
       echo "Exiting."
       exit 0
     fi
@@ -5039,8 +4958,11 @@ interactive_profile_menu() {
         ;;
       s|9)
         if select_profile_interactive "use"; then
-          echo "Switched to profile: ${CURRENT_PROFILE}"
-          # user can choose [P] to launch the current profile.
+          if load_profile_by_name "$CURRENT_PROFILE"; then
+            echo "Switched to profile: ${CURRENT_PROFILE} (saved as default)"
+          else
+            echo "[ERROR] Failed to load profile: ${CURRENT_PROFILE}"
+          fi
         else
           echo "No profiles available."
         fi
@@ -5092,12 +5014,20 @@ interactive_profile_menu() {
         echo
         read -r -p "Press Enter to return to menu..." _smtty_ver_pause || true
         ;;
+      o|12)
+        echo
+        # Run in a subshell so any `exit` inside the generator doesn't kill the menu.
+        ( print_steam_launch_options ) || true
+        echo
+        read -r -p "Press Enter to return to menu..." _smtty_o_pause || true
+        ;;
+
       b)
         echo "Exiting."
         exit 0
         ;;
       *)
-        echo "Enter G, L, U, M, T, C, V, P, S, N, D, 1-11, or b."
+        echo "Enter G, L, U, M, T, C, V, P, S, N, D, O, 1-12, or b."
         ;;
     esac
   done
