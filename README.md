@@ -42,6 +42,9 @@ https://www.youtube.com/watch?v=r8dZZAY5GDE
 
 #### Learn about what I did in [Hyprland](https://github.com/hyprwm/Hyprland) before using smtty+gamescope -> [Steam_Launch_Options_Wayland_Hyprland](https://github.com/dillacorn/awtarchy/blob/main/extra_notes/Steam_Launch_Options_Wayland_Hyprland.md)
 
+## License
+This project is licensed under the [MIT License](https://github.com/dillacorn/smtty/blob/main/LICENSE)
+
 ## ☕ Donate
 
 Built and maintained out of passion. Always FOSS. Donations appreciated.  
