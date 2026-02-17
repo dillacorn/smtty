@@ -1,6 +1,7 @@
 # smtty
 
-A ~~minimal~~ TTY "Steam Machine" launcher that runs Steam Big Picture inside gamescope on a chosen monitor, with configurable internal resolution (including 4:3 / 16:10 stretch) and saved per-user settings.
+A ~~minimal~~ TTY “Steam Machine” launcher that runs Steam Big Picture inside Gamescope on a chosen monitor, with per-user saved settings and configurable internal resolution (including 4:3/16:10 stretch).
+
 
 ## Discussions and testers wanted
 I’m actively looking for testers, especially on hardware different from mine.  
