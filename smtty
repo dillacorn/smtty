@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v12.8}"
+SMTTY_VERSION="${SMTTY_VERSION:-v13.0}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -145,6 +145,42 @@ smtty_capture_cli_payload() {
   done
 }
 smtty_capture_cli_payload "$@"
+# --- long options (pre-getopts) ---
+SMTTY_EXPOSE_WAYLAND_OVERRIDE_SET=0
+SMTTY_EXPOSE_WAYLAND_OVERRIDE_VALUE=0
+
+if (( $# > 0 )); then
+  _smtty_new_argv=()
+  _smtty_saw_ddash=0
+  for _smtty_a in "$@"; do
+    if [[ "$_smtty_a" == "--" ]]; then
+      _smtty_saw_ddash=1
+      _smtty_new_argv+=("$_smtty_a")
+      continue
+    fi
+    if (( _smtty_saw_ddash )); then
+      _smtty_new_argv+=("$_smtty_a")
+      continue
+    fi
+    case "$_smtty_a" in
+      --expose-wayland)
+        SMTTY_EXPOSE_WAYLAND_OVERRIDE_SET=1
+        SMTTY_EXPOSE_WAYLAND_OVERRIDE_VALUE=1
+        ;;
+      --no-expose-wayland)
+        SMTTY_EXPOSE_WAYLAND_OVERRIDE_SET=1
+        SMTTY_EXPOSE_WAYLAND_OVERRIDE_VALUE=0
+        ;;
+      *)
+        _smtty_new_argv+=("$_smtty_a")
+        ;;
+    esac
+  done
+  set -- "${_smtty_new_argv[@]}"
+  unset _smtty_new_argv _smtty_saw_ddash _smtty_a
+fi
+# --- end long options ---
+
 # --- end CLI payload capture ---
 
 
@@ -491,6 +527,7 @@ ENABLE_GAMESCOPE_HDR=0   # 0/1 -> --hdr-enabled/ITM
 GAMESCOPE_HDR_NITS=1000  # used with --hdr-itm-target-nits
 SMTTY_EDID_HDR_PEAK_NITS=""
 FORCE_GRAB_CURSOR=0      # 0/1 -> --force-grab-cursor
+EXPOSE_WAYLAND=0        # 0/1 -> --expose-wayland
 
 # Low-latency / tearing (advanced; only meaningful in KMS/embedded sessions)
 LOW_LATENCY_TEARING=0   # 0/1: export SteamOS-style tearing capability flags to Steam-in-gamescope
@@ -1353,6 +1390,10 @@ Options:
             Launch Options (Steam Flatpak): flatpak-spawn --host smtty -c <profile> -PIPE -- %command%
   -e        PIPE mode: enable gamescope Steam integration (-e/--steam) for Steam overlay/input.
   -M        Wrap the launched command with MangoHud (mangohud --dlsym). Requires mangohud installed.
+  --expose-wayland
+            Add gamescope --expose-wayland (enables Wayland-native clients inside gamescope).
+  --no-expose-wayland
+            Force-disable --expose-wayland even if the profile enables it.
   --        (Gamepad UI) Optional Steam args to append to Steam-in-gamescope.
             Example: smtty -c <profile> -- -applaunch 730
                      smtty -c <profile> -- steam -applaunch 730 -tenfoot
@@ -1741,6 +1782,7 @@ print_config_summary() {
   print_profile_line "gamescope HDR enabled:"    "$ENABLE_GAMESCOPE_HDR"         "(--hdr-enabled)"
   print_profile_line "gamescope HDR nits:"       "$GAMESCOPE_HDR_NITS"           "(--hdr-debug-nits <nits>)"
   print_profile_line "gamescope force grab:"     "$FORCE_GRAB_CURSOR"            "(--force-grab-cursor)"
+  print_profile_line "gamescope expose wayland:" "$EXPOSE_WAYLAND"            "(--expose-wayland)"
   print_profile_line "Low-latency/tearing:"      "$LOW_LATENCY_TEARING"            "(KMS-only; may tear/break capture)"
   print_profile_line "PipeWire debug mode:"      "$PIPEWIRE_DEBUG_MODE"          "(inherit or 0-3)"
   print_profile_line "LD_PRELOAD mode:"          "${LD_PRELOAD_MODE:-inherit}"     "(inherit or clear)"
@@ -1789,6 +1831,7 @@ ADAPTIVE_SYNC=$ADAPTIVE_SYNC
 ENABLE_GAMESCOPE_HDR=$ENABLE_GAMESCOPE_HDR
 GAMESCOPE_HDR_NITS=$GAMESCOPE_HDR_NITS
 FORCE_GRAB_CURSOR=$FORCE_GRAB_CURSOR
+EXPOSE_WAYLAND=$EXPOSE_WAYLAND
 LOW_LATENCY_TEARING=$LOW_LATENCY_TEARING
 PIPEWIRE_DEBUG_MODE=$PIPEWIRE_DEBUG_MODE
 PIPEWIRE_LATENCY=$PIPEWIRE_LATENCY
@@ -1827,6 +1870,7 @@ load_profile_file() {
   PIPEWIRE_LATENCY=${PIPEWIRE_LATENCY:-inherit}
   PERF_ENV_PRESET=${PERF_ENV_PRESET:-0}
   FORCE_GRAB_CURSOR=${FORCE_GRAB_CURSOR:-0}
+  EXPOSE_WAYLAND=${EXPOSE_WAYLAND:-0}
   LOW_LATENCY_TEARING=${LOW_LATENCY_TEARING:-0}
   LD_PRELOAD_MODE=${LD_PRELOAD_MODE:-inherit}
   G_FPS_BG=${G_FPS_BG:-0}
@@ -2586,6 +2630,27 @@ choose_vrr_hdr_and_steamos() {
     esac
   done
   echo
+  echo "Wayland exposure:"
+  echo "  Enables native Wayland clients inside gamescope (--expose-wayland)."
+  echo "  Usually not needed for Proton/X11 games; can cause odd behavior on some setups."
+  local ew
+  while :; do
+    ew=$(read_default "Expose Wayland to clients inside gamescope? (0 = no, 1 = yes)" "$EXPOSE_WAYLAND")
+    if [[ "$ew" == "$BACK_SENTINEL" ]]; then
+      return 1
+    fi
+    case "$ew" in
+      0|1)
+        EXPOSE_WAYLAND=$ew
+        break
+        ;;
+      *)
+        echo "Enter 0 or 1."
+        ;;
+    esac
+  done
+  echo
+
   if [[ "$SESSION_MODE" == "kms" ]]; then
     echo "Low-latency / tearing (advanced, KMS sessions only):"
     echo "  Enables SteamOS-style tearing capability flags for Steam running inside gamescope."
@@ -3155,6 +3220,10 @@ print_steam_launch_options() {
   if (( FORCE_GRAB_CURSOR == 1 )); then
     args+=(--force-grab-cursor)
   fi
+  if (( EXPOSE_WAYLAND == 1 )); then
+    args+=(--expose-wayland)
+  fi
+
 
   local env_prefix=""
   if (( enable_multi_xwayland )); then
@@ -3312,6 +3381,10 @@ launch_gamescope_payload() {
   if (( FORCE_GRAB_CURSOR == 1 )); then
     args+=(--force-grab-cursor)
   fi
+  if (( EXPOSE_WAYLAND == 1 )); then
+    args+=(--expose-wayland)
+  fi
+
 
   maybe_set_flatpak_nvidia_gbm_env
   run_pre_hook
@@ -4188,6 +4261,10 @@ launch_vanilla_gamescope() {
   if (( FORCE_GRAB_CURSOR == 1 )); then
     args+=(--force-grab-cursor)
   fi
+  if (( EXPOSE_WAYLAND == 1 )); then
+    args+=(--expose-wayland)
+  fi
+
 
   echo "Command:"
   if (( enable_multi_xwayland )); then
@@ -4874,6 +4951,123 @@ kill_gamescope() {
   return $had_gs
 }
 
+
+interactive_profile_settings_editor() {
+  if (( HAVE_CONFIG == 0 )); then
+    echo
+    echo "No profile loaded. Create one first (use [N] in the main menu)."
+    read -r -p "Press Enter to return..." _smtty_edit_pause || true
+    return 0
+  fi
+
+  local prof="${CURRENT_PROFILE:-}"
+  [[ -z "$prof" ]] && prof="default"
+
+  while :; do
+    smtty_ui_menu_break
+    detect_session_mode
+    init_default_refresh_for_output
+
+    echo "Edit profile: ${prof}"
+    echo
+    print_config_summary
+    echo
+
+    echo "Edit sections:"
+    echo "  [1] Steam (native/flatpak + launch mode)"
+    echo "  [2] Output (DRM connector)"
+    echo "  [3] Resolution / scaling"
+    echo "  [4] Refresh + FPS limits"
+    echo "  [5] VRR / HDR / cursor / expose-wayland / low-latency"
+    echo "  [6] PipeWire (debug + latency)"
+    echo "  [7] Perf env preset"
+    echo "  [8] LD_PRELOAD mode"
+    echo "  [9] Audio switching"
+    echo "  [0] Pre/Post commands"
+    echo "  [S] Save profile"
+    echo "  [b] Back"
+
+    local c
+    if ! read_key_or_number c "Choose section [1-9,0,S,b]: " ; then
+      return 0
+    fi
+    c="${c//[[:space:]]/}"
+    c="${c,,}"
+    [[ -z "$c" ]] && continue
+
+    case "$c" in
+      1)
+        if ! detect_steam_installations; then
+          echo "[ERROR] Steam not found."
+          read -r -p "Press Enter..." _smtty_edit_pause2 || true
+          continue
+        fi
+        if choose_steam_launch_mode; then
+          save_config || true
+        fi
+        ;;
+      2)
+        if choose_drm_output; then
+          save_config || true
+          prof="${CURRENT_PROFILE:-$prof}"
+        fi
+        ;;
+      3)
+        if choose_resolution_profile; then
+          save_config || true
+        fi
+        ;;
+      4)
+        if choose_gamescope_rate; then
+          save_config || true
+        fi
+        ;;
+      5)
+        if choose_vrr_hdr_and_steamos; then
+          save_config || true
+        fi
+        ;;
+      6)
+        if choose_pipewire_debug; then
+          if choose_pipewire_latency; then
+            save_config || true
+          fi
+        fi
+        ;;
+      7)
+        if choose_perf_env_preset; then
+          save_config || true
+        fi
+        ;;
+      8)
+        if choose_ld_preload_mode; then
+          save_config || true
+        fi
+        ;;
+      9)
+        if choose_audio_switch; then
+          save_config || true
+        fi
+        ;;
+      0)
+        if choose_pre_post_commands; then
+          save_config || true
+        fi
+        ;;
+      s)
+        save_config || true
+        read -r -p "Press Enter to return..." _smtty_save_pause || true
+        ;;
+      b)
+        return 0
+        ;;
+      *)
+        echo "Enter 1-9, 0, S, or b."
+        ;;
+    esac
+  done
+}
+
 interactive_profile_menu() {
   smtty_load_locked_game_if_any || true
   while :; do
@@ -4912,6 +5106,15 @@ interactive_profile_menu() {
       mh_state="ON"
     fi
 
+    local ew_state="OFF"
+    if (( EXPOSE_WAYLAND )); then
+      ew_state="ON"
+    fi
+    local ew_note=""
+    if (( HAVE_CONFIG == 0 )); then
+      ew_note=" (unavailable: no profile)"
+    fi
+
     echo "Options:"
     echo "  [G] [1]  Pick installed Steam game to auto-launch"
     echo "  [L] [2]  Lock selected game (persist across runs)"
@@ -4925,10 +5128,12 @@ interactive_profile_menu() {
     echo "  [N] [10] Create new profile"
     echo "  [D] [11] Delete a profile"
     echo "  [O] [12] Steam launch options for this profile"
+    echo "  [W] [13] Toggle Expose Wayland (--expose-wayland) (currently: ${ew_state})${ew_note}"
+    echo "  [E] [14] Edit current profile settings"
     echo "  [b] Exit"
 
     local choice
-    if ! read_key_or_number choice "Choose option [G,L,U,M,T,C,V,P,S,N,D,O,1-12,b]: " ; then
+    if ! read_key_or_number choice "Choose option [G,L,U,M,T,C,V,P,S,N,D,O,W,E,1-14,b]: " ; then
       echo "Exiting."
       exit 0
     fi
@@ -4957,6 +5162,24 @@ interactive_profile_menu() {
           fi
         fi
         ;;
+      w|13)
+        if (( HAVE_CONFIG == 0 )); then
+          echo "No profile loaded. Create one first (use [N])."
+        else
+          if (( EXPOSE_WAYLAND )); then
+            EXPOSE_WAYLAND=0
+            echo "Expose Wayland: OFF"
+          else
+            EXPOSE_WAYLAND=1
+            echo "Expose Wayland: ON (can break some games)"
+          fi
+          save_config || true
+        fi
+        ;;
+      e|14)
+        interactive_profile_settings_editor
+        ;;
+
       p|8)
         run_from_current_config
         ;;
@@ -5031,7 +5254,7 @@ interactive_profile_menu() {
         exit 0
         ;;
       *)
-        echo "Enter G, L, U, M, T, C, V, P, S, N, D, O, 1-12, or b."
+        echo "Enter G, L, U, M, T, C, V, P, S, N, D, O, W, E, 1-14, or b."
         ;;
     esac
   done
@@ -5121,6 +5344,11 @@ if [[ -n "$SELECTED_PROFILE" && $FLAG_DELETE_PROFILE -eq 0 ]]; then
 else
   load_config_default
 fi
+# Apply long-option overrides after profile load
+if (( ${SMTTY_EXPOSE_WAYLAND_OVERRIDE_SET:-0} == 1 )); then
+  EXPOSE_WAYLAND=$SMTTY_EXPOSE_WAYLAND_OVERRIDE_VALUE
+fi
+
 
 if (( FLAG_PIPE )); then
   run_pipe_mode "$@"
