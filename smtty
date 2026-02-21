@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # SMTTY_VERSION_BLOCK_BEGIN
-SMTTY_VERSION="${SMTTY_VERSION:-v13.3}"
+SMTTY_VERSION="${SMTTY_VERSION:-v13.4}"
 SMTTY_REPO="${SMTTY_REPO:-dillacorn/smtty}"
 SMTTY_UPDATE_CMD="${SMTTY_UPDATE_CMD:-smtty-update}"
 
@@ -251,20 +251,6 @@ smtty_has_nvidia_proprietary() {
 
 # Compute once.
 SMTTY_GPU_VENDOR="${SMTTY_GPU_VENDOR:-$(smtty_detect_gpu_vendor)}"
-
-# Default: allow multi-xwayland everywhere except Intel/unknown.
-SMTTY_MULTI_XWAYLAND_OK=1
-case "$SMTTY_GPU_VENDOR" in
-  intel|unknown) SMTTY_MULTI_XWAYLAND_OK=0 ;;
-esac
-
-# User overrides.
-if [[ "${SMTTY_FORCE_MULTI_XWAYLAND:-0}" == "1" ]]; then
-  SMTTY_MULTI_XWAYLAND_OK=1
-fi
-if [[ "${SMTTY_DISABLE_MULTI_XWAYLAND:-0}" == "1" ]]; then
-  SMTTY_MULTI_XWAYLAND_OK=0
-fi
 
 # >>> SMTTY GPU/DRIVER COMPAT v2 >>>
 # Fix hybrid GPU mis-detection by tying NVIDIA env fixups to the *selected DRM output* GPU.
@@ -3270,14 +3256,6 @@ print_steam_launch_options() {
     args+=(-S stretch)
   fi
 
-  local enable_multi_xwayland=0
-  if (( GAME_W == NATIVE_W && GAME_H == NATIVE_H )) && [[ "$STRETCH_FLAG" != "stretch" ]]; then
-    enable_multi_xwayland=1
-    if (( SMTTY_MULTI_XWAYLAND_OK )); then  # smtty gpu compat
-      args+=(--xwayland-count 2)
-    fi
-  fi
-
   if (( ADAPTIVE_SYNC == 1 )); then
     args+=(--adaptive-sync)
   fi
@@ -3295,11 +3273,6 @@ print_steam_launch_options() {
 
 
   local env_prefix=""
-  if (( enable_multi_xwayland )); then
-    if (( SMTTY_MULTI_XWAYLAND_OK )); then  # smtty gpu compat
-      env_prefix+="STEAM_MULTIPLE_XWAYLANDS=1 "
-    fi
-  fi
   if (( LOW_LATENCY_TEARING == 1 )) && [[ "$SESSION_MODE" == "kms" ]]; then
     env_prefix+="STEAM_GAMESCOPE_TEARING_SUPPORTED=1 STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1 GAMESCOPE_ALLOW_TEARING=1 "
   fi
@@ -3431,14 +3404,6 @@ launch_gamescope_payload() {
     args+=(-S stretch)
   fi
 
-  local enable_multi_xwayland=0
-  if (( GAME_W == NATIVE_W && GAME_H == NATIVE_H )) && [[ "$STRETCH_FLAG" != "stretch" ]]; then
-    enable_multi_xwayland=1
-    if (( SMTTY_MULTI_XWAYLAND_OK )); then  # smtty gpu compat
-      args+=(--xwayland-count 2)
-    fi
-  fi
-
   if (( ADAPTIVE_SYNC == 1 )); then
     args+=(--adaptive-sync)
   fi
@@ -3492,16 +3457,8 @@ launch_gamescope_payload() {
   fi
 
   local -a gs_exec=(env "PATH=$smtty_helper_path" gamescope)
-  if (( enable_multi_xwayland )); then
-    if (( SMTTY_MULTI_XWAYLAND_OK )); then  # smtty gpu compat
-      gs_exec=(env "PATH=$smtty_helper_path" STEAM_MULTIPLE_XWAYLANDS=1 gamescope)
-    fi
-  fi
 
   echo "PIPE mode command:"
-  if (( enable_multi_xwayland )); then
-    printf '%s' 'STEAM_MULTIPLE_XWAYLANDS=1 '
-  fi
   if (( LOW_LATENCY_TEARING == 1 )) && [[ "$SESSION_MODE" == "kms" ]]; then
     printf '%s' 'STEAM_GAMESCOPE_TEARING_SUPPORTED=1 STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1 GAMESCOPE_ALLOW_TEARING=1 '
   fi
@@ -4333,14 +4290,6 @@ launch_vanilla_gamescope() {
     args+=(-S stretch)
   fi
 
-  local enable_multi_xwayland=0
-  if (( GAME_W == NATIVE_W && GAME_H == NATIVE_H )) && [[ "$STRETCH_FLAG" != "stretch" ]]; then
-    enable_multi_xwayland=1
-    if (( SMTTY_MULTI_XWAYLAND_OK )); then  # smtty gpu compat
-      args+=(--xwayland-count 2)
-    fi
-  fi
-
   if (( ADAPTIVE_SYNC == 1 )); then
     args+=(--adaptive-sync)
   fi
@@ -4358,9 +4307,6 @@ launch_vanilla_gamescope() {
 
 
   echo "Command:"
-  if (( enable_multi_xwayland )); then
-    printf 'STEAM_MULTIPLE_XWAYLANDS=1 '
-  fi
   if (( LOW_LATENCY_TEARING == 1 )) && [[ "$SESSION_MODE" == "kms" ]]; then
     printf 'STEAM_GAMESCOPE_TEARING_SUPPORTED=1 STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1 GAMESCOPE_ALLOW_TEARING=1 '
   fi
@@ -4410,11 +4356,6 @@ launch_vanilla_gamescope() {
   fi
 
   local -a gs_exec=(env "PATH=$smtty_helper_path" gamescope)
-  if (( enable_multi_xwayland )); then
-    if (( SMTTY_MULTI_XWAYLAND_OK )); then  # smtty gpu compat
-      gs_exec=(env "PATH=${smtty_helper_path:-$PATH}" STEAM_MULTIPLE_XWAYLANDS=1 gamescope)
-    fi
-  fi
 
   if (( FLAG_DETACH )); then
     if command -v setsid >/dev/null 2>&1; then
@@ -4449,11 +4390,6 @@ launch_vanilla_gamescope() {
 
     local cmd_str
     cmd_str="env PATH=$q_path gamescope"
-    if (( enable_multi_xwayland )); then
-      if (( SMTTY_MULTI_XWAYLAND_OK )); then  # smtty gpu compat
-        cmd_str="env PATH=$q_path STEAM_MULTIPLE_XWAYLANDS=1 gamescope"
-      fi
-    fi
     local a
     for a in "${args[@]}"; do
       cmd_str+=" $(printf '%q' "$a")"
@@ -5221,10 +5157,10 @@ interactive_profile_menu() {
     echo "  [O] [12] Steam launch options for this profile"
     echo "  [W] [13] Toggle Expose Wayland (--expose-wayland) (currently: ${ew_state})${ew_note}"
     echo "  [E] [14] Edit current profile settings"
-    echo "  [b] Exit"
+    echo "  [Q] Quit"
 
     local choice
-    if ! read_key_or_number choice "Choose option [G,L,U,M,T,C,V,P,S,N,D,O,W,E,1-14,b]: " ; then
+    if ! read_key_or_number choice "Choose option [G,L,U,M,T,C,V,P,S,N,D,O,W,E,Q,1-14,q]: " ; then
       echo "Exiting."
       exit 0
     fi
@@ -5340,12 +5276,12 @@ interactive_profile_menu() {
         read -r -p "Press Enter to return to menu..." _smtty_o_pause || true
         ;;
 
-      b)
+      q|b)
         echo "Exiting."
         exit 0
         ;;
       *)
-        echo "Enter G, L, U, M, T, C, V, P, S, N, D, O, W, E, 1-14, or b."
+        echo "Enter G, L, U, M, T, C, V, P, S, N, D, O, W, E, Q, 1-14, or q."
         ;;
     esac
   done
