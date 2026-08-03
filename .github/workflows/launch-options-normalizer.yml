@@ -1,29 +1,27 @@
-name: Bootstrap launch-option normalizer
+name: Launch-option normalizer tests
 
 on:
   push:
-    branches:
-      - agent/normalize-launch-options
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - .github/workflows/launch-options-normalizer.yml
   pull_request:
-    branches:
-      - main
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - .github/workflows/launch-options-normalizer.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-and-validate:
+  validate:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out branch
+      - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
-          fetch-depth: 0
-
-      - name: Apply targeted smtty patch
-        run: python3 tools/apply-launch-options-normalizer.py
 
       - name: Check Bash syntax
         run: |
@@ -43,17 +41,3 @@ jobs:
 
       - name: Check whitespace errors
         run: git diff --check
-
-      - name: Commit patched smtty
-        run: |
-          if git diff --quiet -- smtty; then
-            echo "smtty is already patched"
-            exit 0
-          fi
-
-          branch=${{ github.head_ref || github.ref_name }}
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add smtty
-          git commit -m "fix: normalize Steam launch option environment variables"
-          git push origin HEAD:"$branch"
