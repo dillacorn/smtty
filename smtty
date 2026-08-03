@@ -3219,6 +3219,214 @@ on_gamescope_exit() {
   return 0
 }
 
+# SMTTY_LAUNCH_OPTIONS_NORMALIZER_BEGIN
+SMTTY_LAUNCH_TOKENS=()
+SMTTY_LAUNCH_NORMALIZE_ERROR=""
+SMTTY_NORMALIZED_ENV=""
+SMTTY_NORMALIZED_COMMAND=""
+SMTTY_NORMALIZED_COUNT=0
+
+smtty_tokenize_launch_options() {
+  local input=$1
+  local len=${#input}
+  local i=0
+  local ch next quote token
+
+  SMTTY_LAUNCH_TOKENS=()
+  SMTTY_LAUNCH_NORMALIZE_ERROR=""
+
+  while (( i < len )); do
+    while (( i < len )); do
+      ch=${input:i:1}
+      [[ "$ch" =~ [[:space:]] ]] || break
+      i=$((i + 1))
+    done
+    (( i < len )) || break
+
+    token=""
+    quote=""
+
+    while (( i < len )); do
+      ch=${input:i:1}
+
+      if [[ -z "$quote" ]]; then
+        if [[ "$ch" =~ [[:space:]] ]]; then
+          break
+        fi
+        case "$ch" in
+          "'")
+            quote="'"
+            token+="$ch"
+            i=$((i + 1))
+            ;;
+          '"')
+            quote='"'
+            token+="$ch"
+            i=$((i + 1))
+            ;;
+          \\)
+            token+="$ch"
+            i=$((i + 1))
+            if (( i >= len )); then
+              SMTTY_LAUNCH_NORMALIZE_ERROR="Launch options end with an incomplete escape."
+              return 1
+            fi
+            token+="${input:i:1}"
+            i=$((i + 1))
+            ;;
+          ';'|'&'|'|'|'<'|'>'|'('|')'|'`')
+            SMTTY_LAUNCH_NORMALIZE_ERROR="Unquoted shell control character '$ch' is too ambiguous to normalize safely."
+            return 1
+            ;;
+          *)
+            token+="$ch"
+            i=$((i + 1))
+            ;;
+        esac
+      elif [[ "$quote" == "'" ]]; then
+        token+="$ch"
+        i=$((i + 1))
+        if [[ "$ch" == "'" ]]; then
+          quote=""
+        fi
+      else
+        token+="$ch"
+        i=$((i + 1))
+        if [[ "$ch" == '"' ]]; then
+          quote=""
+        elif [[ "$ch" == '\' ]]; then
+          if (( i >= len )); then
+            SMTTY_LAUNCH_NORMALIZE_ERROR="Launch options end with an incomplete escape."
+            return 1
+          fi
+          next=${input:i:1}
+          token+="$next"
+          i=$((i + 1))
+        fi
+      fi
+    done
+
+    if [[ -n "$quote" ]]; then
+      SMTTY_LAUNCH_NORMALIZE_ERROR="Launch options contain an unterminated quote."
+      return 1
+    fi
+
+    SMTTY_LAUNCH_TOKENS+=("$token")
+  done
+
+  return 0
+}
+
+smtty_join_launch_tokens() {
+  local -n tokens_ref=$1
+  local joined=""
+  local token
+
+  for token in "${tokens_ref[@]}"; do
+    if [[ -n "$joined" ]]; then
+      joined+=" "
+    fi
+    joined+="$token"
+  done
+
+  printf '%s' "$joined"
+}
+
+smtty_normalize_launch_options() {
+  local input=$1
+  local -a env_tokens=()
+  local -a command_tokens=()
+  local token
+  local i=0
+  local count
+  local command_seen=0
+  local extracted=0
+
+  SMTTY_NORMALIZED_ENV=""
+  SMTTY_NORMALIZED_COMMAND=""
+  SMTTY_NORMALIZED_COUNT=0
+  SMTTY_LAUNCH_NORMALIZE_ERROR=""
+
+  if ! smtty_tokenize_launch_options "$input"; then
+    return 1
+  fi
+
+  count=${#SMTTY_LAUNCH_TOKENS[@]}
+  if (( count == 0 )); then
+    SMTTY_LAUNCH_NORMALIZE_ERROR="Launch options are empty."
+    return 1
+  fi
+
+  while (( i < count )); do
+    token=${SMTTY_LAUNCH_TOKENS[i]}
+
+    if [[ "$token" == "%command%" ]]; then
+      command_seen=1
+      command_tokens+=("$token")
+      i=$((i + 1))
+      continue
+    fi
+
+    if (( command_seen == 0 )); then
+      if [[ "$token" == "gamescope" ]]; then
+        SMTTY_LAUNCH_NORMALIZE_ERROR="The pasted options already contain gamescope. Paste the original game options instead."
+        return 1
+      fi
+
+      if [[ "$token" == "env" ]] && (( i + 1 < count )); then
+        local j=$((i + 1))
+        local env_found=0
+
+        while (( j < count )); do
+          local env_token=${SMTTY_LAUNCH_TOKENS[j]}
+          if [[ "$env_token" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            env_tokens+=("$env_token")
+            env_found=1
+            extracted=$((extracted + 1))
+            j=$((j + 1))
+          else
+            break
+          fi
+        done
+
+        if (( env_found )); then
+          if (( j < count )) && [[ "${SMTTY_LAUNCH_TOKENS[j]}" == "--" ]]; then
+            j=$((j + 1))
+          fi
+          i=$j
+          continue
+        fi
+      fi
+
+      if [[ "$token" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+        env_tokens+=("$token")
+        extracted=$((extracted + 1))
+        i=$((i + 1))
+        continue
+      fi
+    fi
+
+    command_tokens+=("$token")
+    i=$((i + 1))
+  done
+
+  if (( command_seen == 0 )); then
+    SMTTY_LAUNCH_NORMALIZE_ERROR="Launch options must contain %command%."
+    return 1
+  fi
+
+  if (( ${#command_tokens[@]} == 0 )); then
+    SMTTY_LAUNCH_NORMALIZE_ERROR="No game command remains after normalization."
+    return 1
+  fi
+
+  SMTTY_NORMALIZED_ENV=$(smtty_join_launch_tokens env_tokens)
+  SMTTY_NORMALIZED_COMMAND=$(smtty_join_launch_tokens command_tokens)
+  SMTTY_NORMALIZED_COUNT=$extracted
+  return 0
+}
+# SMTTY_LAUNCH_OPTIONS_NORMALIZER_END
+
 print_steam_launch_options() {
   if (( HAVE_CONFIG == 0 )); then
     echo "No saved config; run 'smtty -n -O' first."
@@ -3234,19 +3442,35 @@ print_steam_launch_options() {
   echo "Enter your current Steam launch options for this game."
   echo "Example: gamemoderun %command% -novid +fps_max 0 -high -dx12"
   local CURRENT_LAUNCH_OPTS
-  if ! backable_read CURRENT_LAUNCH_OPTS "Current launch options (empty = just %command%, b = back): "; then
-    echo "Aborting launch options generator."
-    exit 0
-  fi
+  local NORMALIZED_LAUNCH_ENV=""
 
-  if [[ -z "$CURRENT_LAUNCH_OPTS" ]]; then
-    CURRENT_LAUNCH_OPTS='%command%'
-  else
-    if [[ "$CURRENT_LAUNCH_OPTS" != *"%command%"* ]]; then
+  while :; do
+    if ! backable_read CURRENT_LAUNCH_OPTS "Current launch options (empty = just %command%, b = back): "; then
+      echo "Aborting launch options generator."
+      exit 0
+    fi
+
+    if [[ -z "$CURRENT_LAUNCH_OPTS" ]]; then
+      CURRENT_LAUNCH_OPTS='%command%'
+    elif [[ "$CURRENT_LAUNCH_OPTS" != *"%command%"* ]]; then
       echo "Note: your launch options did not contain %command%; appending at the end."
       CURRENT_LAUNCH_OPTS="$CURRENT_LAUNCH_OPTS %command%"
     fi
-  fi
+
+    if smtty_normalize_launch_options "$CURRENT_LAUNCH_OPTS"; then
+      NORMALIZED_LAUNCH_ENV="$SMTTY_NORMALIZED_ENV"
+      CURRENT_LAUNCH_OPTS="$SMTTY_NORMALIZED_COMMAND"
+      if (( SMTTY_NORMALIZED_COUNT > 0 )); then
+        echo "Moved $SMTTY_NORMALIZED_COUNT environment assignment(s) before gamescope:"
+        echo "  $NORMALIZED_LAUNCH_ENV"
+      fi
+      break
+    fi
+
+    print_error "$SMTTY_LAUNCH_NORMALIZE_ERROR"
+    echo "Re-enter the original launch options so smtty does not generate a broken command."
+    echo
+  done
 
   echo
 
@@ -3359,6 +3583,9 @@ print_steam_launch_options() {
   echo
 
   printf '%s' "$env_prefix"
+  if [[ -n "$NORMALIZED_LAUNCH_ENV" ]]; then
+    printf '%s ' "$NORMALIZED_LAUNCH_ENV"
+  fi
   if (( use_flatpak_prefix )); then
     printf 'flatpak-spawn --host '
   fi
