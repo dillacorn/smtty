@@ -1,29 +1,27 @@
-name: Refine launch-option normalizer
+name: Launch-option normalizer tests
 
 on:
   push:
-    branches:
-      - agent/normalize-launch-options
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - .github/workflows/launch-options-normalizer.yml
   pull_request:
-    branches:
-      - main
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - .github/workflows/launch-options-normalizer.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-and-validate:
+  validate:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out branch
+      - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
-          fetch-depth: 0
-
-      - name: Apply normalizer refinements
-        run: python3 tools/refine-launch-options-normalizer.py
 
       - name: Check Bash syntax
         run: |
@@ -43,17 +41,3 @@ jobs:
 
       - name: Check whitespace errors
         run: git diff --check
-
-      - name: Commit refined smtty
-        run: |
-          if git diff --quiet -- smtty; then
-            echo "smtty is already refined"
-            exit 0
-          fi
-
-          branch=${{ github.head_ref || github.ref_name }}
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add smtty
-          git commit -m "fix: preserve advanced launch option semantics"
-          git push origin HEAD:"$branch"
