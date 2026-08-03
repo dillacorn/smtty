@@ -46,6 +46,24 @@ assert_ok() {
     fail "$name: count expected <$expected_count>, got <$SMTTY_NORMALIZED_COUNT>"
 }
 
+assert_prefix() {
+  local name=$1
+  local use_flatpak=$2
+  local profile_env=$3
+  local normalized_env=$4
+  local expected=$5
+  local actual
+
+  tests_run=$((tests_run + 1))
+  actual=$(smtty_print_gamescope_launch_prefix \
+    "$use_flatpak" \
+    "$profile_env" \
+    "$normalized_env")
+
+  [[ "$actual" == "$expected" ]] ||
+    fail "$name: prefix expected <$expected>, got <$actual>"
+}
+
 assert_reject() {
   local name=$1
   local input=$2
@@ -60,6 +78,27 @@ assert_reject() {
   [[ "$SMTTY_LAUNCH_NORMALIZE_ERROR" == *"$expected_fragment"* ]] ||
     fail "$name: error expected to contain <$expected_fragment>, got <$SMTTY_LAUNCH_NORMALIZE_ERROR>"
 }
+
+assert_prefix \
+  "native env prefix" \
+  0 \
+  'PIPEWIRE_DEBUG=0 ' \
+  'PROTON_FSR4_RDNA3_UPGRADE=1' \
+  'PIPEWIRE_DEBUG=0 PROTON_FSR4_RDNA3_UPGRADE=1 '
+
+assert_prefix \
+  "flatpak env forwarding" \
+  1 \
+  'PIPEWIRE_DEBUG=0 ' \
+  'PROTON_FSR4_RDNA3_UPGRADE=1' \
+  'flatpak-spawn --host env PIPEWIRE_DEBUG=0 PROTON_FSR4_RDNA3_UPGRADE=1 '
+
+assert_prefix \
+  "flatpak without env" \
+  1 \
+  '' \
+  '' \
+  'flatpak-spawn --host '
 
 assert_ok \
   "reported broken ordering" \
@@ -223,8 +262,8 @@ generator_block=$(
     "$repo_root/smtty"
 )
 
-[[ "$generator_block" == *'printf '\''%s '\'' "$NORMALIZED_LAUNCH_ENV"'* ]] ||
-  fail "generator does not emit normalized assignments before gamescope"
+[[ "$generator_block" == *'smtty_print_gamescope_launch_prefix'* ]] ||
+  fail "generator does not use the tested launch-prefix formatter"
 [[ "$generator_block" == *'printf '\'' -- %s\n'\'' "$CURRENT_LAUNCH_OPTS"'* ]] ||
   fail "generator does not emit the normalized command after gamescope --"
 

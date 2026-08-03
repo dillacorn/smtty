@@ -3446,6 +3446,28 @@ smtty_normalize_launch_options() {
   SMTTY_NORMALIZED_COUNT=$extracted
   return 0
 }
+smtty_print_gamescope_launch_prefix() {
+  local use_flatpak_prefix=$1
+  local env_prefix=$2
+  local normalized_env=$3
+
+  if (( use_flatpak_prefix )); then
+    printf 'flatpak-spawn --host '
+    if [[ -n "$env_prefix$normalized_env" ]]; then
+      printf 'env '
+      printf '%s' "$env_prefix"
+      if [[ -n "$normalized_env" ]]; then
+        printf '%s ' "$normalized_env"
+      fi
+    fi
+  else
+    printf '%s' "$env_prefix"
+    if [[ -n "$normalized_env" ]]; then
+      printf '%s ' "$normalized_env"
+    fi
+  fi
+}
+
 # SMTTY_LAUNCH_OPTIONS_NORMALIZER_END
 
 print_steam_launch_options() {
@@ -3603,13 +3625,10 @@ print_steam_launch_options() {
   echo "Generated Steam launch options (nested gamescope, no Gamepad UI):"
   echo
 
-  printf '%s' "$env_prefix"
-  if [[ -n "$NORMALIZED_LAUNCH_ENV" ]]; then
-    printf '%s ' "$NORMALIZED_LAUNCH_ENV"
-  fi
-  if (( use_flatpak_prefix )); then
-    printf 'flatpak-spawn --host '
-  fi
+  smtty_print_gamescope_launch_prefix \
+    "$use_flatpak_prefix" \
+    "$env_prefix" \
+    "$NORMALIZED_LAUNCH_ENV"
   printf 'gamescope'
   if (( use_steam_integration )); then
     printf ' -e'
