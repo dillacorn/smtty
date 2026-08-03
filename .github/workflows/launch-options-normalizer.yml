@@ -1,0 +1,55 @@
+name: Bootstrap launch-option normalizer
+
+on:
+  push:
+    branches:
+      - agent/normalize-launch-options
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Apply targeted smtty patch
+        run: python3 tools/apply-launch-options-normalizer.py
+
+      - name: Check Bash syntax
+        run: |
+          bash -n smtty
+          bash -n tests/test-launch-options-normalizer.sh
+
+      - name: Run launch-option parser cases
+        run: bash tests/test-launch-options-normalizer.sh
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck error pass
+        run: shellcheck -S error smtty tests/test-launch-options-normalizer.sh
+
+      - name: Check whitespace errors
+        run: git diff --check
+
+      - name: Commit patched smtty
+        run: |
+          if git diff --quiet -- smtty; then
+            echo "smtty is already patched"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add smtty
+          git commit -m "fix: normalize Steam launch option environment variables"
+          git push origin HEAD:${{ github.ref_name }}
