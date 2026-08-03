@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/normalize-launch-options
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -16,7 +19,7 @@ jobs:
       - name: Check out branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref_name }}
+          ref: ${{ github.head_ref || github.ref_name }}
           fetch-depth: 0
 
       - name: Apply targeted smtty patch
@@ -48,8 +51,9 @@ jobs:
             exit 0
           fi
 
+          branch=${{ github.head_ref || github.ref_name }}
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add smtty
           git commit -m "fix: normalize Steam launch option environment variables"
-          git push origin HEAD:${{ github.ref_name }}
+          git push origin HEAD:"$branch"
