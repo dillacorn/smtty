@@ -1,0 +1,43 @@
+name: Launch-option normalizer tests
+
+on:
+  push:
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - .github/workflows/launch-options-normalizer.yml
+  pull_request:
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - .github/workflows/launch-options-normalizer.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check Bash syntax
+        run: |
+          bash -n smtty
+          bash -n tests/test-launch-options-normalizer.sh
+
+      - name: Run launch-option parser cases
+        run: bash tests/test-launch-options-normalizer.sh
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck error pass
+        run: shellcheck -S error smtty tests/test-launch-options-normalizer.sh
+
+      - name: Check whitespace errors
+        run: git diff --check
