@@ -166,6 +166,32 @@ assert_ok \
   'wrapper --config=value %command%' \
   0
 
+assert_ok \
+  "env options preserve assignment scope" \
+  'env --ignore-environment FOO=1 gamemoderun %command%' \
+  '' \
+  'env --ignore-environment FOO=1 gamemoderun %command%' \
+  0
+
+assert_ok \
+  "redirection after command stays intact" \
+  'FOO=1 gamemoderun %command% 2>&1' \
+  'FOO=1' \
+  'gamemoderun %command% 2>&1' \
+  1
+
+assert_ok \
+  "command chain after placeholder stays intact" \
+  'FOO=1 gamemoderun %command% && echo done' \
+  'FOO=1' \
+  'gamemoderun %command% && echo done' \
+  1
+
+assert_reject \
+  "nested gamescope absolute path" \
+  'PIPEWIRE_DEBUG=0 /usr/bin/gamescope -f -- gamemoderun %command%' \
+  'already contain gamescope'
+
 assert_reject \
   "nested gamescope" \
   'PIPEWIRE_DEBUG=0 gamescope -f -- gamemoderun %command%' \
@@ -183,7 +209,7 @@ assert_reject \
 
 assert_reject \
   "unquoted command separator" \
-  'FOO=1 gamemoderun %command% ; echo broken' \
+  'FOO=1 ; gamemoderun %command%' \
   'too ambiguous'
 
 assert_reject \
