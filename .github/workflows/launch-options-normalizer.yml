@@ -1,26 +1,27 @@
-name: Apply Flatpak environment forwarding
+name: Launch-option normalizer tests
 
 on:
+  push:
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - .github/workflows/launch-options-normalizer.yml
   pull_request:
-    branches:
-      - main
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - .github/workflows/launch-options-normalizer.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-and-validate:
+  validate:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out branch
+      - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-
-      - name: Apply Flatpak forwarding patch
-        run: python3 tools/apply-flatpak-env-forwarding.py
 
       - name: Check Bash syntax
         run: |
@@ -40,16 +41,3 @@ jobs:
 
       - name: Check whitespace errors
         run: git diff --check
-
-      - name: Commit Flatpak forwarding patch
-        run: |
-          if git diff --quiet -- smtty tests/test-launch-options-normalizer.sh; then
-            echo "Flatpak forwarding is already patched"
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add smtty tests/test-launch-options-normalizer.sh
-          git commit -m "fix: forward launch environment through Flatpak"
-          git push origin HEAD:${{ github.head_ref }}
