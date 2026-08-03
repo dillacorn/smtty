@@ -3231,6 +3231,7 @@ smtty_tokenize_launch_options() {
   local len=${#input}
   local i=0
   local ch next quote token
+  local after_command=0
 
   SMTTY_LAUNCH_TOKENS=()
   SMTTY_LAUNCH_NORMALIZE_ERROR=""
@@ -3275,8 +3276,13 @@ smtty_tokenize_launch_options() {
             i=$((i + 1))
             ;;
           ';'|'&'|'|'|'<'|'>'|'('|')'|'`')
-            SMTTY_LAUNCH_NORMALIZE_ERROR="Unquoted shell control character '$ch' is too ambiguous to normalize safely."
-            return 1
+            if (( after_command )); then
+              token+="$ch"
+              i=$((i + 1))
+            else
+              SMTTY_LAUNCH_NORMALIZE_ERROR="Unquoted shell control character '$ch' is too ambiguous to normalize safely."
+              return 1
+            fi
             ;;
           *)
             token+="$ch"
@@ -3312,6 +3318,9 @@ smtty_tokenize_launch_options() {
     fi
 
     SMTTY_LAUNCH_TOKENS+=("$token")
+    if [[ "$token" == "%command%" ]]; then
+      after_command=1
+    fi
   done
 
   return 0
@@ -3341,6 +3350,7 @@ smtty_normalize_launch_options() {
   local count
   local command_seen=0
   local extracted=0
+  local preserve_env_tail=0
 
   SMTTY_NORMALIZED_ENV=""
   SMTTY_NORMALIZED_COMMAND=""
@@ -3368,9 +3378,15 @@ smtty_normalize_launch_options() {
     fi
 
     if (( command_seen == 0 )); then
-      if [[ "$token" == "gamescope" ]]; then
+      if [[ "$token" == "gamescope" || "$token" == */gamescope ]]; then
         SMTTY_LAUNCH_NORMALIZE_ERROR="The pasted options already contain gamescope. Paste the original game options instead."
         return 1
+      fi
+
+      if (( preserve_env_tail )); then
+        command_tokens+=("$token")
+        i=$((i + 1))
+        continue
       fi
 
       if [[ "$token" == "env" ]] && (( i + 1 < count )); then
@@ -3396,6 +3412,11 @@ smtty_normalize_launch_options() {
           i=$j
           continue
         fi
+
+        preserve_env_tail=1
+        command_tokens+=("$token")
+        i=$((i + 1))
+        continue
       fi
 
       if [[ "$token" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
