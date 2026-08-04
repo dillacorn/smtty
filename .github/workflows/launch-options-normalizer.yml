@@ -1,4 +1,4 @@
-name: Revise compact main menu
+name: Add compact menu number labels
 
 on:
   pull_request:
@@ -19,8 +19,8 @@ jobs:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
 
-      - name: Apply menu revision
-        run: python3 tools/revise-compact-main-menu.py
+      - name: Add visible number aliases
+        run: python3 tools/add-compact-menu-numbers.py
 
       - name: Check Bash syntax
         run: |
@@ -44,15 +44,15 @@ jobs:
       - name: Check whitespace
         run: git diff --check
 
-      - name: Commit menu revision
+      - name: Commit visible number aliases
         run: |
           if git diff --quiet -- smtty tests/test-compact-ui.sh; then
-            echo "Menu revision already applied"
+            echo "Number labels already applied"
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add smtty tests/test-compact-ui.sh
-          git commit -m "refine: show all compact menu actions"
+          git commit -m "refine: show numeric menu shortcuts"
           git push origin HEAD:${{ github.head_ref }}
