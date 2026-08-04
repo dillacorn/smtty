@@ -1,4 +1,4 @@
-name: Apply compact terminal UI
+name: Refine compact terminal UI
 
 on:
   pull_request:
@@ -20,7 +20,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply compact UI patch
-        run: python3 tools/apply-compact-ui.py
+        run: |
+          python3 tools/apply-compact-ui.py
+          python3 tools/refine-compact-ui.py
 
       - name: Check Bash syntax
         run: |
@@ -44,15 +46,15 @@ jobs:
       - name: Check whitespace errors
         run: git diff --check
 
-      - name: Commit compact UI
+      - name: Commit compact UI refinements
         run: |
           if git diff --quiet -- smtty; then
-            echo "Compact UI is already applied"
+            echo "Compact UI is already refined"
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add smtty
-          git commit -m "feat: add compact terminal dashboard"
+          git commit -m "refine: tighten compact dashboard labels"
           git push origin HEAD:${{ github.head_ref }}
