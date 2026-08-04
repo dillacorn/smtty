@@ -5526,11 +5526,11 @@ smtty_print_action_row() {
 
 smtty_print_compact_actions() {
   echo "Actions"
-  smtty_print_action_row "[P] [8]"  "Play"         "[G] [1]"  "Select game" "[O] [12]" "Launch options"
-  smtty_print_action_row "[S] [9]"  "Profiles"     "[N] [10]" "New profile" "[D] [11]" "Delete profile"
-  smtty_print_action_row "[E] [14]" "Edit profile" "[M] [4]"  "MangoHud"    "[W] [13]" "Wayland"
-  smtty_print_action_row "[L] [2]"  "Lock game"    "[U] [3]"  "Unlock game" "[C] [6]"  "Clear game"
-  smtty_print_action_row "[T] [5]"  "Diagnostics"  "[V] [7]"  "Version"     "[Q]"      "Quit"
+  smtty_print_action_row "[P] [1]"  "Play"         "[G] [2]"  "Select game" "[O] [3]"  "Launch options"
+  smtty_print_action_row "[S] [4]"  "Profiles"     "[N] [5]"  "New profile" "[D] [6]"  "Delete profile"
+  smtty_print_action_row "[E] [7]"  "Edit profile" "[M] [8]"  "MangoHud"    "[W] [9]"  "Wayland"
+  smtty_print_action_row "[L] [10]" "Lock game"    "[U] [11]" "Unlock game" "[C] [12]" "Clear game"
+  smtty_print_action_row "[T] [13]" "Diagnostics"  "[V] [14]" "Version"     "[Q]"      "Quit"
 }
 # SMTTY_COMPACT_UI_END
 
@@ -5704,9 +5704,9 @@ interactive_profile_settings_editor() {
     smtty_print_action_row "[F] [4]" "Refresh"      "[E] [5]" "Features"     "[P] [6]" "PipeWire"
     smtty_print_action_row "[C] [7]" "Shader cache" "[L] [8]" "LD_PRELOAD"   "[A] [9]" "Audio"
     if (( is_new )); then
-      smtty_print_action_row "[H] [0]" "Hooks" "[S]" "Save" "[Q]" "Cancel"
+      smtty_print_action_row "[H] [10]" "Hooks" "[S]" "Save" "[Q]" "Cancel"
     else
-      smtty_print_action_row "[H] [0]" "Hooks" "[S]" "Save" "[B]" "Back"
+      smtty_print_action_row "[H] [10]" "Hooks" "[S]" "Save" "[B]" "Back"
     fi
 
     local c
@@ -5757,7 +5757,7 @@ interactive_profile_settings_editor() {
       a|9)
         if choose_audio_switch && (( ! is_new )); then save_config || true; fi
         ;;
-      h|0)
+      h|10)
         if choose_pre_post_commands && (( ! is_new )); then save_config || true; fi
         ;;
       s)
@@ -5821,7 +5821,7 @@ interactive_profile_menu() {
     [[ -z "$choice" ]] && continue
 
     case "$choice" in
-      m|4)
+      m|8)
         if (( FLAG_MANGOHUD )); then
           FLAG_MANGOHUD=0
           echo "MangoHud: Off"
@@ -5842,7 +5842,7 @@ interactive_profile_menu() {
           fi
         fi
         ;;
-      w|13)
+      w|9)
         if (( HAVE_CONFIG == 0 )); then
           echo "No profile loaded. Create one first."
         else
@@ -5856,13 +5856,13 @@ interactive_profile_menu() {
           save_config || true
         fi
         ;;
-      e|14)
+      e|7)
         interactive_profile_settings_editor
         ;;
-      p|8)
+      p|1)
         run_from_current_config
         ;;
-      s|9)
+      s|4)
         if select_profile_interactive "use"; then
           if load_profile_by_name "$CURRENT_PROFILE"; then
             echo "Profile: ${CURRENT_PROFILE}"
@@ -5874,11 +5874,11 @@ interactive_profile_menu() {
         fi
         continue
         ;;
-      n|10)
+      n|5)
         interactive_new_profile || true
         continue
         ;;
-      d|11)
+      d|6)
         if select_profile_interactive "delete"; then
           delete_profile "$CURRENT_PROFILE" || true
         else
@@ -5886,39 +5886,39 @@ interactive_profile_menu() {
         fi
         continue
         ;;
-      g|1)
+      g|2)
         if pick_installed_steam_game; then
           echo "Game: ${SMTTY_APPLAUNCH_NAME} (${SMTTY_APPLAUNCH_APPID})"
           rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
-          echo "Selection is temporary. Use [L] or [2] to persist it."
+          echo "Selection is temporary. Use [L] or [10] to persist it."
         fi
         ;;
-      t|h|5)
+      t|h|13)
         echo
         smtty_doctor
         echo
         read -r -p "Press Enter to return..." _smtty_doc_pause || true
         ;;
-      l|2)
+      l|10)
         smtty_lock_selected_game || true
         ;;
-      u|3)
+      u|11)
         smtty_unlock_selected_game || true
         ;;
-      c|6)
+      c|12)
         SMTTY_APPLAUNCH_APPID=""
         SMTTY_APPLAUNCH_NAME=""
         export SMTTY_APPLAUNCH_APPID SMTTY_APPLAUNCH_NAME
         rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
         echo "Game selection cleared."
         ;;
-      v|7)
+      v|14)
         echo
         smtty_print_version
         echo
         read -r -p "Press Enter to return..." _smtty_ver_pause || true
         ;;
-      o|12)
+      o|3)
         echo
         ( print_steam_launch_options ) || true
         echo
