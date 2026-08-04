@@ -1,35 +1,37 @@
-name: Launch-option normalizer tests
+name: Apply compact terminal UI
 
 on:
-  push:
-    paths:
-      - smtty
-      - tests/test-launch-options-normalizer.sh
-      - .github/workflows/launch-options-normalizer.yml
   pull_request:
-    paths:
-      - smtty
-      - tests/test-launch-options-normalizer.sh
-      - .github/workflows/launch-options-normalizer.yml
+    branches:
+      - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  validate:
+  patch-and-validate:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Check out branch
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Apply compact UI patch
+        run: python3 tools/apply-compact-ui.py
 
       - name: Check Bash syntax
         run: |
           bash -n smtty
           bash -n tests/test-launch-options-normalizer.sh
+          bash -n tests/test-compact-ui.sh
 
-      - name: Run launch-option parser cases
-        run: bash tests/test-launch-options-normalizer.sh
+      - name: Run test suites
+        run: |
+          bash tests/test-launch-options-normalizer.sh
+          bash tests/test-compact-ui.sh
 
       - name: Install ShellCheck
         run: |
@@ -37,7 +39,20 @@ jobs:
           sudo apt-get install -y shellcheck
 
       - name: Run ShellCheck error pass
-        run: shellcheck -S error smtty tests/test-launch-options-normalizer.sh
+        run: shellcheck -S error smtty tests/test-launch-options-normalizer.sh tests/test-compact-ui.sh
 
       - name: Check whitespace errors
         run: git diff --check
+
+      - name: Commit compact UI
+        run: |
+          if git diff --quiet -- smtty; then
+            echo "Compact UI is already applied"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add smtty
+          git commit -m "feat: add compact terminal dashboard"
+          git push origin HEAD:${{ github.head_ref }}
