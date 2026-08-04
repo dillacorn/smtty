@@ -5526,11 +5526,11 @@ smtty_print_action_row() {
 
 smtty_print_compact_actions() {
   echo "Actions"
-  smtty_print_action_row "[P] [1]"  "Play"         "[G] [2]"  "Select game" "[O] [3]"  "Launch options"
-  smtty_print_action_row "[S] [4]"  "Profiles"     "[N] [5]"  "New profile" "[D] [6]"  "Delete profile"
-  smtty_print_action_row "[E] [7]"  "Edit profile" "[M] [8]"  "MangoHud"    "[W] [9]"  "Wayland"
-  smtty_print_action_row "[L] [10]" "Lock game"    "[U] [11]" "Unlock game" "[C] [12]" "Clear game"
-  smtty_print_action_row "[T] [13]" "Diagnostics"  "[V] [14]" "Version"     "[Q]"      "Quit"
+  smtty_print_action_row "[P] [1]"  "Play"         "[G] [6]"  "Select game" "[O] [11]" "Launch options"
+  smtty_print_action_row "[S] [2]"  "Profiles"     "[N] [7]"  "New profile" "[D] [12]" "Delete profile"
+  smtty_print_action_row "[E] [3]"  "Edit profile" "[M] [8]"  "MangoHud"    "[W] [13]" "Wayland"
+  smtty_print_action_row "[L] [4]"  "Lock game"    "[U] [9]"  "Unlock game" "[C] [14]" "Clear game"
+  smtty_print_action_row "[T] [5]"  "Diagnostics"  "[V] [10]" "Version"     "[Q]"      "Quit"
 }
 # SMTTY_COMPACT_UI_END
 
@@ -5700,13 +5700,13 @@ interactive_profile_settings_editor() {
     echo
 
     echo "Sections"
-    smtty_print_action_row "[T] [1]" "Steam"        "[D] [2]" "Display"      "[R] [3]" "Resolution"
-    smtty_print_action_row "[F] [4]" "Refresh"      "[E] [5]" "Features"     "[P] [6]" "PipeWire"
-    smtty_print_action_row "[C] [7]" "Shader cache" "[L] [8]" "LD_PRELOAD"   "[A] [9]" "Audio"
+    smtty_print_action_row "[T] [1]" "Steam"        "[D] [5]" "Display"      "[R] [8]" "Resolution"
+    smtty_print_action_row "[F] [2]" "Refresh"      "[E] [6]" "Features"     "[P] [9]" "PipeWire"
+    smtty_print_action_row "[C] [3]" "Shader cache" "[L] [7]" "LD_PRELOAD"   "[A] [10]" "Audio"
     if (( is_new )); then
-      smtty_print_action_row "[H] [10]" "Hooks" "[S]" "Save" "[Q]" "Cancel"
+      smtty_print_action_row "[H] [4]" "Hooks" "[S]" "Save" "[Q]" "Cancel"
     else
-      smtty_print_action_row "[H] [10]" "Hooks" "[S]" "Save" "[B]" "Back"
+      smtty_print_action_row "[H] [4]" "Hooks" "[S]" "Save" "[B]" "Back"
     fi
 
     local c
@@ -5728,36 +5728,36 @@ interactive_profile_settings_editor() {
         fi
         if choose_steam_launch_mode && (( ! is_new )); then save_config || true; fi
         ;;
-      d|2)
+      d|5)
         if choose_drm_output && (( ! is_new )); then
           save_config || true
           prof="${CURRENT_PROFILE:-$prof}"
         fi
         ;;
-      r|3)
+      r|8)
         if choose_resolution_profile && (( ! is_new )); then save_config || true; fi
         ;;
-      f|4)
+      f|2)
         if choose_gamescope_rate && (( ! is_new )); then save_config || true; fi
         ;;
-      e|5)
+      e|6)
         if choose_vrr_hdr_and_steamos && (( ! is_new )); then save_config || true; fi
         ;;
-      p|6)
+      p|9)
         if choose_pipewire_debug; then
           if choose_pipewire_latency && (( ! is_new )); then save_config || true; fi
         fi
         ;;
-      c|7)
+      c|3)
         if choose_perf_env_preset && (( ! is_new )); then save_config || true; fi
         ;;
-      l|8)
+      l|7)
         if choose_ld_preload_mode && (( ! is_new )); then save_config || true; fi
         ;;
-      a|9)
+      a|10)
         if choose_audio_switch && (( ! is_new )); then save_config || true; fi
         ;;
-      h|10)
+      h|4)
         if choose_pre_post_commands && (( ! is_new )); then save_config || true; fi
         ;;
       s)
@@ -5842,7 +5842,7 @@ interactive_profile_menu() {
           fi
         fi
         ;;
-      w|9)
+      w|13)
         if (( HAVE_CONFIG == 0 )); then
           echo "No profile loaded. Create one first."
         else
@@ -5856,13 +5856,13 @@ interactive_profile_menu() {
           save_config || true
         fi
         ;;
-      e|7)
+      e|3)
         interactive_profile_settings_editor
         ;;
       p|1)
         run_from_current_config
         ;;
-      s|4)
+      s|2)
         if select_profile_interactive "use"; then
           if load_profile_by_name "$CURRENT_PROFILE"; then
             echo "Profile: ${CURRENT_PROFILE}"
@@ -5874,11 +5874,11 @@ interactive_profile_menu() {
         fi
         continue
         ;;
-      n|5)
+      n|7)
         interactive_new_profile || true
         continue
         ;;
-      d|6)
+      d|12)
         if select_profile_interactive "delete"; then
           delete_profile "$CURRENT_PROFILE" || true
         else
@@ -5886,39 +5886,39 @@ interactive_profile_menu() {
         fi
         continue
         ;;
-      g|2)
+      g|6)
         if pick_installed_steam_game; then
           echo "Game: ${SMTTY_APPLAUNCH_NAME} (${SMTTY_APPLAUNCH_APPID})"
           rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
-          echo "Selection is temporary. Use [L] or [10] to persist it."
+          echo "Selection is temporary. Use [L] or [4] to persist it."
         fi
         ;;
-      t|h|13)
+      t|h|5)
         echo
         smtty_doctor
         echo
         read -r -p "Press Enter to return..." _smtty_doc_pause || true
         ;;
-      l|10)
+      l|4)
         smtty_lock_selected_game || true
         ;;
-      u|11)
+      u|9)
         smtty_unlock_selected_game || true
         ;;
-      c|12)
+      c|14)
         SMTTY_APPLAUNCH_APPID=""
         SMTTY_APPLAUNCH_NAME=""
         export SMTTY_APPLAUNCH_APPID SMTTY_APPLAUNCH_NAME
         rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
         echo "Game selection cleared."
         ;;
-      v|14)
+      v|10)
         echo
         smtty_print_version
         echo
         read -r -p "Press Enter to return..." _smtty_ver_pause || true
         ;;
-      o|3)
+      o|11)
         echo
         ( print_steam_launch_options ) || true
         echo

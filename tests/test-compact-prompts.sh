@@ -11,9 +11,9 @@ sed -n '/^# SMTTY_COMPACT_UI_BEGIN$/,/^# SMTTY_COMPACT_UI_END$/p' "$source_file"
 source "$helper_file"
 
 actions=$(smtty_print_compact_actions)
-expected_first='  [P] [1]   Play             [G] [2]   Select game       [O] [3]   Launch options'
-expected_edit='  [E] [7]   Edit profile     [M] [8]   MangoHud          [W] [9]   Wayland'
-expected_quit='  [T] [13]  Diagnostics      [V] [14]  Version           [Q]       Quit'
+expected_first='  [P] [1]   Play             [G] [6]   Select game       [O] [11]  Launch options'
+expected_edit='  [E] [3]   Edit profile     [M] [8]   MangoHud          [W] [13]  Wayland'
+expected_quit='  [T] [5]   Diagnostics      [V] [10]  Version           [Q]       Quit'
 
 grep -Fqx "$expected_first" <<<"$actions"
 grep -Fqx "$expected_edit" <<<"$actions"
