@@ -20,7 +20,7 @@ jobs:
           fetch-depth: 0
 
       - name: Apply compact prompt pass
-        run: python3 tools/compact-selection-prompts.py
+        run: python3 tools/run-compact-selection-prompts.py
 
       - name: Check Bash syntax
         run: |
