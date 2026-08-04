@@ -39,4 +39,32 @@ smtty = smtty.replace(old_lines[0], '  echo "LD_PRELOAD: ${LD_PRELOAD_MODE^}"\n'
 smtty = smtty.replace(old_lines[1], "", 1)
 smtty = smtty.replace(old_lines[2], "", 1)
 smtty_path.write_text(smtty, encoding="utf-8")
-print("applied compact prompt pass with LD_PRELOAD fix")
+
+ui_test_path = Path("tests/test-compact-ui.sh")
+ui_test = ui_test_path.read_text(encoding="utf-8")
+labels = {
+    "[P] [8] Play": "Play",
+    "[G] [1] Select game": "Select game",
+    "[O] [12] Launch options": "Launch options",
+    "[S] [9] Profiles": "Profiles",
+    "[N] [10] New profile": "New profile",
+    "[D] [11] Delete profile": "Delete profile",
+    "[E] [14] Edit profile": "Edit profile",
+    "[M] [4] MangoHud": "MangoHud",
+    "[W] [13] Wayland": "Wayland",
+    "[L] [2] Lock game": "Lock game",
+    "[U] [3] Unlock game": "Unlock game",
+    "[C] [6] Clear game": "Clear game",
+    "[T] [5] Diagnostics": "Diagnostics",
+    "[V] [7] Version": "Version",
+    "[Q] Quit": "Quit",
+}
+for old, new in labels.items():
+    needle = f'[[ "$actions" == *"{old}"* ]]'
+    replacement = f'[[ "$actions" == *"{new}"* ]]'
+    if needle not in ui_test:
+        raise SystemExit(f"compact UI assertion not found: {old}")
+    ui_test = ui_test.replace(needle, replacement, 1)
+ui_test_path.write_text(ui_test, encoding="utf-8")
+
+print("applied compact prompt pass with aligned-action test updates")
