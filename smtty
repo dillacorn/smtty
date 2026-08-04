@@ -1326,7 +1326,8 @@ read_one_key() {
 
   printf '%s' "$__prompt"
   IFS= read -rsn1 __ch || exit 1
-  if [[ "${__ch}" == $'' || "${__ch}" == $'
+  if [[ "${__ch}" == $'
+' || "${__ch}" == $'
 ' ]]; then
     __ch=""
   fi
@@ -5687,21 +5688,25 @@ interactive_profile_settings_editor() {
 
     if (( is_new )); then
       echo "New profile · unsaved"
+      echo
+      echo "Review this draft. Change only what you need, then save."
     else
       echo "Edit profile: ${prof}"
+      echo
+      echo "Select a section to modify."
     fi
     echo
     smtty_print_compact_summary 0 ""
     echo
 
     echo "Sections"
-    printf '  %-20s %-20s %s\n' "[1] Steam" "[2] Display" "[3] Resolution"
-    printf '  %-20s %-20s %s\n' "[4] Refresh" "[5] Features" "[6] PipeWire"
-    printf '  %-20s %-20s %s\n' "[7] Performance" "[8] LD_PRELOAD" "[9] Audio"
+    smtty_print_action_row "[T] [1]" "Steam"        "[D] [2]" "Display"      "[R] [3]" "Resolution"
+    smtty_print_action_row "[F] [4]" "Refresh"      "[E] [5]" "Features"     "[P] [6]" "PipeWire"
+    smtty_print_action_row "[C] [7]" "Shader cache" "[L] [8]" "LD_PRELOAD"   "[A] [9]" "Audio"
     if (( is_new )); then
-      printf '  %-20s %-20s %s\n' "[0] Hooks" "[S] Save" "[Q] Cancel"
+      smtty_print_action_row "[H] [0]" "Hooks" "[S]" "Save" "[Q]" "Cancel"
     else
-      printf '  %-20s %-20s %s\n' "[0] Hooks" "[S] Save" "[B] Back"
+      smtty_print_action_row "[H] [0]" "Hooks" "[S]" "Save" "[B]" "Back"
     fi
 
     local c
@@ -5716,43 +5721,43 @@ interactive_profile_settings_editor() {
     [[ -z "$c" ]] && continue
 
     case "$c" in
-      1)
+      t|1)
         if ! detect_steam_installations; then
           echo "[ERROR] Steam not found."
           continue
         fi
         if choose_steam_launch_mode && (( ! is_new )); then save_config || true; fi
         ;;
-      2)
+      d|2)
         if choose_drm_output && (( ! is_new )); then
           save_config || true
           prof="${CURRENT_PROFILE:-$prof}"
         fi
         ;;
-      3)
+      r|3)
         if choose_resolution_profile && (( ! is_new )); then save_config || true; fi
         ;;
-      4)
+      f|4)
         if choose_gamescope_rate && (( ! is_new )); then save_config || true; fi
         ;;
-      5)
+      e|5)
         if choose_vrr_hdr_and_steamos && (( ! is_new )); then save_config || true; fi
         ;;
-      6)
+      p|6)
         if choose_pipewire_debug; then
           if choose_pipewire_latency && (( ! is_new )); then save_config || true; fi
         fi
         ;;
-      7)
+      c|7)
         if choose_perf_env_preset && (( ! is_new )); then save_config || true; fi
         ;;
-      8)
+      l|8)
         if choose_ld_preload_mode && (( ! is_new )); then save_config || true; fi
         ;;
-      9)
+      a|9)
         if choose_audio_switch && (( ! is_new )); then save_config || true; fi
         ;;
-      0)
+      h|0)
         if choose_pre_post_commands && (( ! is_new )); then save_config || true; fi
         ;;
       s)
@@ -5781,11 +5786,7 @@ interactive_profile_settings_editor() {
         return 0
         ;;
       *)
-        if (( is_new )); then
-          echo "Choose 1-9, 0, S, or Q."
-        else
-          echo "Choose 1-9, 0, S, or B."
-        fi
+        echo "Choose a listed letter or number."
         ;;
     esac
   done
