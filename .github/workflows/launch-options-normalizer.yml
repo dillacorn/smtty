@@ -1,26 +1,29 @@
-name: Use dual-bracket menu shortcuts
+name: smtty tests
 
 on:
+  push:
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - tests/test-compact-ui.sh
+      - .github/workflows/launch-options-normalizer.yml
   pull_request:
-    branches:
-      - main
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - tests/test-compact-ui.sh
+      - .github/workflows/launch-options-normalizer.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-and-validate:
+  validate:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out branch
+      - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-
-      - name: Apply dual-bracket labels
-        run: python3 tools/use-dual-menu-brackets.py
 
       - name: Check Bash syntax
         run: |
@@ -43,16 +46,3 @@ jobs:
 
       - name: Check whitespace
         run: git diff --check
-
-      - name: Commit dual-bracket labels
-        run: |
-          if git diff --quiet -- smtty tests/test-compact-ui.sh; then
-            echo "Dual-bracket labels already applied"
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add smtty tests/test-compact-ui.sh
-          git commit -m "refine: show letter and number shortcuts"
-          git push origin HEAD:${{ github.head_ref }}
