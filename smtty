@@ -608,8 +608,13 @@ FLAG_PIPE_STEAM_INTEGRATION=0  # -e: pipe-mode only; enable gamescope Steam inte
 FLAG_MANGOHUD=0                # -M: wrap the launched command with MangoHud (mangohud --dlsym)
 SELECTED_PROFILE=""   # -c <profile>: use specific profile
 
-# back navigation
+# back / quit navigation
 BACK_SENTINEL="__SMTTY_BACK__"
+# SMTTY_GUIDED_QUIT_BEGIN
+QUIT_SENTINEL="__SMTTY_QUIT__"
+SMTTY_PROMPT_QUIT_ENABLED=0
+SMTTY_QUIT_REQUESTED=0
+# SMTTY_GUIDED_QUIT_END
 
 # ---------------- gamescope desktop-mode kill hack ----------------
 
@@ -1166,7 +1171,7 @@ pick_installed_steam_game() {
     (( end > total )) && end=$total
     local on_page=$(( end - start ))
 
-    echo "Installed Steam games (page $((page + 1))/$pages, showing $((start + 1))-$end of $total, page size $page_size):"
+    echo "Steam games · page $((page + 1))/$pages · $((start + 1))-$end of $total"
     echo
 
     local i line name appid local_i
@@ -1180,10 +1185,10 @@ pick_installed_steam_game() {
     done
 
     echo
-    echo "  [N] Next page   [P] Previous page   [G] Set page size   [B] Back   [F] Find"
+    echo "  [N] Next   [P] Previous   [G] Page size   [F] Find   [B] Back"
     echo
 
-    printf "Select game (1-%d) or n/p/g/b/f: " "$on_page"
+    printf "Choose [1-%d/N/P/G/F/B]: " "$on_page"
     local ch=""
     IFS= read -rsn1 ch || exit 1
 
@@ -1197,7 +1202,7 @@ case "${ch}" in
     # SMTTY_FIND_CASE_BEGIN
     f|F)
       echo
-      read -r -p "Find game name (empty clears): " __smtty_find
+      read -r -p "Find (empty = clear): " __smtty_find
     page=0
       continue
       ;;
@@ -1223,7 +1228,7 @@ case "${ch}" in
       [gG])
         echo
         local newps
-        if ! backable_read newps "Games per page [$page_size] (5-$max, b = back): "; then
+        if ! backable_read newps "Page size [$page_size] (5-$max, b = back): "; then
           continue
         fi
         [[ -z "$newps" ]] && newps="$page_size"
@@ -1282,38 +1287,66 @@ esac
 
 backable_read() {
   # backable_read <var_name> <prompt>
+  # Returns 2 for back and 3 for guided-setup quit.
   local __var_name=$1
   local __prompt=$2
   local __value
+
+  if (( ${SMTTY_PROMPT_QUIT_ENABLED:-0} )); then
+    __prompt=${__prompt//b = back/b = back, q = quit}
+  fi
+
   read -rp "$__prompt" __value || exit 1
-  if [[ "${__value,,}" == "b" ]]; then
-    return 2
-  fi
-  if [[ "$__value" == "b" ]]; then
-    return 1
-  fi
+  case "${__value,,}" in
+    b)
+      return 2
+      ;;
+    q)
+      if (( ${SMTTY_PROMPT_QUIT_ENABLED:-0} )); then
+        SMTTY_QUIT_REQUESTED=1
+        return 3
+      fi
+      ;;
+  esac
+
   printf -v "$__var_name" '%s' "$__value"
   return 0
 }
 
 read_one_key() {
   # read_one_key <var_name> <prompt>
-  # Reads a single keypress (no Enter). Returns 1 if key was 'b'.
+  # Reads one key. Returns 1 for back and 3 for guided-setup quit.
   local __var_name=$1
   local __prompt=$2
   local __ch=""
+
+  if (( ${SMTTY_PROMPT_QUIT_ENABLED:-0} )); then
+    __prompt=${__prompt//b = back/b = back, q = quit}
+  fi
+
   printf '%s' "$__prompt"
   IFS= read -rsn1 __ch || exit 1
-  if [[ "${__ch}" == $'\r' || "${__ch}" == $'\n' ]]; then
+  if [[ "${__ch}" == $'
+' || "${__ch}" == $'
+' ]]; then
     __ch=""
   fi
-  if [[ "${__ch}" == "B" ]]; then
-    __ch="b"
-  fi
-  printf '\n'
+
+  case "$__ch" in
+    B) __ch="b" ;;
+    Q) __ch="q" ;;
+  esac
+
+  printf '
+'
   if [[ "$__ch" == "b" ]]; then
     return 1
   fi
+  if [[ "$__ch" == "q" ]] && (( ${SMTTY_PROMPT_QUIT_ENABLED:-0} )); then
+    SMTTY_QUIT_REQUESTED=1
+    return 3
+  fi
+
   printf -v "$__var_name" '%s' "$__ch"
   return 0
 }
@@ -1463,13 +1496,21 @@ read_default() {
   local def=$2
   local val
   if ! backable_read val "$prompt [$def] (b = back): "; then
-    printf '%s\n' "$BACK_SENTINEL"
+    if (( ${SMTTY_QUIT_REQUESTED:-0} )); then
+      printf '%s
+' "$QUIT_SENTINEL"
+    else
+      printf '%s
+' "$BACK_SENTINEL"
+    fi
     return 0
   fi
   if [[ -z "$val" ]]; then
-    printf '%s\n' "$def"
+    printf '%s
+' "$def"
   else
-    printf '%s\n' "$val"
+    printf '%s
+' "$val"
   fi
 }
 
@@ -1706,12 +1747,12 @@ prompt_profile_name() {
   local profile_name
 
   echo
-  echo "Save this configuration as a named profile."
-  echo "Examples: gaming, 4k-monitor, stretched-43, desktop-session"
+  echo "Save profile"
+  echo "  Examples: gaming, stretched-43, desktop-session"
   echo
 
   while :; do
-    if ! backable_read profile_name "Profile name [$default_name] (b = back): "; then
+    if ! backable_read profile_name "Name [$default_name] (b = back): "; then
       return 1
     fi
 
@@ -2382,13 +2423,11 @@ init_default_refresh_for_output() {
 
   if [[ "$detected" =~ ^[0-9]+$ ]] && (( detected > 0 )); then
     G_FPS=$detected
-    print_info "Auto-detected max refresh for $DRM_SHORT at ${NATIVE_W}x${NATIVE_H}: ${G_FPS} Hz"
-    echo
   fi
 }
 
 choose_drm_output() {
-  echo "Detected *connected* outputs:"
+  echo "Displays"
   echo
 
   local entries=()
@@ -2424,7 +2463,7 @@ choose_drm_output() {
     done <"$modes_path"
 
     entries+=("$short:$native_line")
-    printf '  [%d] %s (native: %s)\n' "$idx" "$short" "$native_line"
+    printf '  [%d] %s · %s\n' "$idx" "$short" "$native_line"
     idx=$((idx + 1))
   done
 
@@ -2436,11 +2475,11 @@ choose_drm_output() {
   local choice
   while :; do
     if ((${#entries[@]} <= 9)); then
-      if ! read_one_key choice "Select output [1-${#entries[@]}, b = back]: "; then
+      if ! read_one_key choice "Choose display [1-${#entries[@]}, b = back]: "; then
         return 1
       fi
     else
-      if ! backable_read choice "Select output [1-${#entries[@]}, b = back]: "; then
+      if ! backable_read choice "Choose display [1-${#entries[@]}, b = back]: "; then
         return 1
       fi
     fi
@@ -2476,15 +2515,8 @@ choose_drm_output() {
   fi
 
   echo
-  echo "Using output: $DRM_SHORT (native ${NATIVE_W}x${NATIVE_H})"
-  echo "Session mode: $SESSION_MODE (kms = bare VT, nested = under compositor)"
-  echo
-  if [[ "$SESSION_MODE" == "nested" ]]; then
-    echo "Note: running under a compositor. gamescope will be nested as a window"
-    echo "      or fullscreen surface. Physical monitor resolution is not changed,"
-    echo "      but gamescope still controls internal and outer resolutions/scaling."
-    echo
-  fi
+  printf 'Display: %s · %sx%s · %s\n\n' \
+    "$DRM_SHORT" "$NATIVE_W" "$NATIVE_H" "${SESSION_MODE^}"
 
   # Auto-initialize default refresh to the highest supported rate
   # for this connector at its native resolution, if G_FPS is still 0.
@@ -2501,15 +2533,21 @@ choose_resolution_profile() {
   custom_resolution_prompt() {
     local w h
     while :; do
-      read -r -p "Custom width in px [${NATIVE_W}] (or 'q' to cancel): " w
-      [[ $w == "q" || $w == "Q" ]] && return 1
+      read -r -p "Width [${NATIVE_W}] (b = back, q = quit): " w
+      case "${w,,}" in
+        b) return 1 ;;
+        q) SMTTY_QUIT_REQUESTED=1; return 1 ;;
+      esac
       w="${w:-$NATIVE_W}"
       [[ $w =~ ^[0-9]+$ ]] && (( w >= 320 && w <= 16384 )) && break
       echo "Invalid width: $w"
     done
     while :; do
-      read -r -p "Custom height in px [${NATIVE_H}] (or 'q' to cancel): " h
-      [[ $h == "q" || $h == "Q" ]] && return 1
+      read -r -p "Height [${NATIVE_H}] (b = back, q = quit): " h
+      case "${h,,}" in
+        b) return 1 ;;
+        q) SMTTY_QUIT_REQUESTED=1; return 1 ;;
+      esac
       h="${h:-$NATIVE_H}"
       [[ $h =~ ^[0-9]+$ ]] && (( h >= 240 && h <= 16384 )) && break
       echo "Invalid height: $h"
@@ -2531,8 +2569,8 @@ choose_resolution_profile() {
     fi
 
     local _saved_reply="${REPLY-}"
-    if ! prompt_select_default "Stretch mode" 1 \
-      "Stretch to fill ${NATIVE_W}x${NATIVE_H} (distorts)" \
+    if ! prompt_select_default "Scaling" 1 \
+      "Fill screen (stretch)" \
       "Keep aspect (black bars)"; then
       return 1
     fi
@@ -2547,16 +2585,16 @@ choose_resolution_profile() {
   }
 
   if [[ $NATIVE_W -eq 1920 && $NATIVE_H -eq 1080 ]]; then
-    echo "Resolution profile for 1080p 16:9:"
-    if ! prompt_select_default "Choose profile" 1 \
+    echo "Render resolution"
+    if ! prompt_select_default "Choose" 1 \
       "Native 1920x1080" \
-      "1280x960 (4:3 base)" \
-      "1440x1080 (4:3 base)" \
-      "1352x1080 (4:3 base)" \
-      "1600x1200 (4:3 base, downscale)" \
-      "1680x1050 (16:10 base)" \
-      "1728x1080 (16:10 base)" \
-      "1920x1200 (16:10 base, downscale)" \
+      "1280x960 · 4:3" \
+      "1440x1080 · 4:3" \
+      "1352x1080 · 4:3" \
+      "1600x1200 · 4:3 downscale" \
+      "1680x1050 · 16:10" \
+      "1728x1080 · 16:10" \
+      "1920x1200 · 16:10 downscale" \
       "Custom"; then
       return 1
     fi
@@ -2574,13 +2612,13 @@ choose_resolution_profile() {
     ask_stretch_if_needed || return 1
 
   elif [[ $NATIVE_W -eq 2560 && $NATIVE_H -eq 1440 ]]; then
-    echo "Resolution profile for 1440p 16:9:"
-    if ! prompt_select_default "Choose profile" 1 \
+    echo "Render resolution"
+    if ! prompt_select_default "Choose" 1 \
       "Native 2560x1440" \
-      "1600x1200 (4:3 base)" \
-      "1920x1440 (4:3 base)" \
-      "1920x1200 (16:10 base)" \
-      "2304x1440 (16:10 base)" \
+      "1600x1200 · 4:3" \
+      "1920x1440 · 4:3" \
+      "1920x1200 · 16:10" \
+      "2304x1440 · 16:10" \
       "Custom"; then
       return 1
     fi
@@ -2595,18 +2633,18 @@ choose_resolution_profile() {
     ask_stretch_if_needed || return 1
 
   elif [[ $NATIVE_W -eq 3840 && $NATIVE_H -eq 2160 ]]; then
-    echo "Resolution profile for 4K 16:9:"
-    if ! prompt_select_default "Choose profile" 1 \
+    echo "Render resolution"
+    if ! prompt_select_default "Choose" 1 \
       "Native 3840x2160" \
-      "2560x1440 (downscale base)" \
-      "1920x1440 (4:3 base)" \
-      "2880x2160 (4:3 base)" \
-      "3200x2400 (4:3 base)" \
-      "1920x1200 (16:10 base)" \
-      "2560x1600 (16:10 base)" \
-      "2880x1800 (16:10 base)" \
-      "3200x2000 (16:10 base)" \
-      "3456x2160 (16:10 base)" \
+      "2560x1440 · downscale" \
+      "1920x1440 · 4:3" \
+      "2880x2160 · 4:3" \
+      "3200x2400 · 4:3" \
+      "1920x1200 · 16:10" \
+      "2560x1600 · 16:10" \
+      "2880x1800 · 16:10" \
+      "3200x2000 · 16:10" \
+      "3456x2160 · 16:10" \
       "Custom"; then
       return 1
     fi
@@ -2629,7 +2667,11 @@ choose_resolution_profile() {
 
 choose_gamescope_rate() {
   local val
-  val=$(read_default "Target display refresh for gamescope (-r, Hz; 0 = auto-detect max via modetest, else unlimited)" "$G_FPS")
+  val=$(read_default "Display refresh (Hz, 0 = auto)" "$G_FPS")
+  if [[ "$val" == "$QUIT_SENTINEL" ]]; then
+    SMTTY_QUIT_REQUESTED=1
+    return 1
+  fi
   if [[ "$val" == "$BACK_SENTINEL" ]]; then
     return 1
   fi
@@ -2641,7 +2683,7 @@ choose_gamescope_rate() {
 
   echo
   local raw
-  if ! backable_read raw "Nested unfocused refresh (-o, Hz, empty = disabled, b = back): "; then
+  if ! backable_read raw "Unfocused refresh (Hz, empty = off, b = back): "; then
     return 1
   fi
   if [[ -z "$raw" ]]; then
@@ -2649,7 +2691,7 @@ choose_gamescope_rate() {
   elif [[ "$raw" =~ ^[0-9]+$ ]]; then
     G_FPS_BG=$raw
   else
-    echo "Invalid value; disabling -o."
+    echo "Invalid value; using off."
     G_FPS_BG=0
   fi
   echo
@@ -2657,11 +2699,15 @@ choose_gamescope_rate() {
 }
 
 choose_vrr_hdr_and_steamos() {
-  echo "Optional gamescope features:"
+  echo "Features"
 
   local vrr
   while :; do
-    vrr=$(read_default "Enable gamescope adaptive sync / VRR? (0 = no, 1 = yes)" "$ADAPTIVE_SYNC")
+    vrr=$(read_default "VRR (0 = off, 1 = on)" "$ADAPTIVE_SYNC")
+    if [[ "$vrr" == "$QUIT_SENTINEL" ]]; then
+      SMTTY_QUIT_REQUESTED=1
+      return 1
+    fi
     if [[ "$vrr" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
@@ -2678,7 +2724,11 @@ choose_vrr_hdr_and_steamos() {
 
   local hdr
   while :; do
-    hdr=$(read_default "Enable gamescope HDR output? (0 = no, 1 = yes)" "$ENABLE_GAMESCOPE_HDR")
+    hdr=$(read_default "HDR (0 = off, 1 = on)" "$ENABLE_GAMESCOPE_HDR")
+    if [[ "$hdr" == "$QUIT_SENTINEL" ]]; then
+      SMTTY_QUIT_REQUESTED=1
+      return 1
+    fi
     if [[ "$hdr" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
@@ -2708,7 +2758,11 @@ choose_vrr_hdr_and_steamos() {
       print_warn "edid-decode not found; cannot auto-detect HDR nits from EDID. Install it for per-display defaults."
     fi
 
-    nits=$(read_default "HDR ITM target nits (gamescope --hdr-itm-target-nits)" "$default_nits")
+    nits=$(read_default "HDR target nits" "$default_nits")
+    if [[ "$nits" == "$QUIT_SENTINEL" ]]; then
+      SMTTY_QUIT_REQUESTED=1
+      return 1
+    fi
     if [[ "$nits" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
@@ -2722,13 +2776,15 @@ choose_vrr_hdr_and_steamos() {
   fi
 
   echo
-  echo "Cursor grab:"
-  echo "  Mostly useful on bare TTY (KMS). In nested sessions it can make"
-  echo "  mouse input worse if games and overlays already manage grabs."
+  echo "Cursor grab is mainly useful in KMS sessions."
 
   local fg
   while :; do
-    fg=$(read_default "Force gamescope cursor grab? (0 = no, 1 = yes)" "$FORCE_GRAB_CURSOR")
+    fg=$(read_default "Cursor grab (0 = off, 1 = on)" "$FORCE_GRAB_CURSOR")
+    if [[ "$fg" == "$QUIT_SENTINEL" ]]; then
+      SMTTY_QUIT_REQUESTED=1
+      return 1
+    fi
     if [[ "$fg" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
@@ -2743,12 +2799,14 @@ choose_vrr_hdr_and_steamos() {
     esac
   done
   echo
-  echo "Wayland exposure:"
-  echo "  Enables native Wayland clients inside gamescope (--expose-wayland)."
-  echo "  Usually not needed for Proton/X11 games; can cause odd behavior on some setups."
+  echo "Wayland exposure is only needed by native Wayland clients."
   local ew
   while :; do
-    ew=$(read_default "Expose Wayland to clients inside gamescope? (0 = no, 1 = yes)" "$EXPOSE_WAYLAND")
+    ew=$(read_default "Expose Wayland (0 = off, 1 = on)" "$EXPOSE_WAYLAND")
+    if [[ "$ew" == "$QUIT_SENTINEL" ]]; then
+      SMTTY_QUIT_REQUESTED=1
+      return 1
+    fi
     if [[ "$ew" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
@@ -2765,12 +2823,14 @@ choose_vrr_hdr_and_steamos() {
   echo
 
   if [[ "$SESSION_MODE" == "kms" ]]; then
-    echo "Low-latency / tearing (advanced, KMS sessions only):"
-    echo "  Enables SteamOS-style tearing capability flags for Steam running inside gamescope."
-    echo "  Can reduce latency, but may cause visible tearing, break capture, or regress smoothness."
+    echo "Low-latency tearing (KMS only; may break capture)."
     local lt
     while :; do
-      lt=$(read_default "Enable low-latency / tearing mode? (0 = no, 1 = yes)" "$LOW_LATENCY_TEARING")
+      lt=$(read_default "Low-latency tearing (0 = off, 1 = on)" "$LOW_LATENCY_TEARING")
+      if [[ "$lt" == "$QUIT_SENTINEL" ]]; then
+        SMTTY_QUIT_REQUESTED=1
+        return 1
+      fi
       if [[ "$lt" == "$BACK_SENTINEL" ]]; then
         return 1
       fi
@@ -2794,15 +2854,8 @@ choose_vrr_hdr_and_steamos() {
 }
 
 choose_pipewire_debug() {
-  echo "PipeWire / gamescope log verbosity:"
-  echo "  This controls PIPEWIRE_DEBUG for the gamescope process only."
-  echo "  Lower values reduce spam like 'pipewire: warning: out of buffers'."
-  echo
-  echo "  [1] Inherit system default (do not set PIPEWIRE_DEBUG)"
-  echo "  [2] Disabled [PIPEWIRE_DEBUG=0]"
-  echo "  [3] Errors [PIPEWIRE_DEBUG=1]"
-  echo "  [4] Warnings [PIPEWIRE_DEBUG=2]"
-  echo "  [5] Informational messages [PIPEWIRE_DEBUG=3]"
+  echo "PipeWire logging"
+  echo "  [1] Inherit   [2] Off   [3] Errors   [4] Warnings   [5] Info"
 
   local default_choice
   case "$PIPEWIRE_DEBUG_MODE" in
@@ -2815,7 +2868,11 @@ choose_pipewire_debug() {
   esac
 
   local sel
-  sel=$(read_default "Choose PipeWire debug level (1-5)" "$default_choice")
+  sel=$(read_default "Choose (1-5)" "$default_choice")
+  if [[ "$sel" == "$QUIT_SENTINEL" ]]; then
+    SMTTY_QUIT_REQUESTED=1
+    return 1
+  fi
   if [[ "$sel" == "$BACK_SENTINEL" ]]; then
     return 1
   fi
@@ -2833,28 +2890,24 @@ choose_pipewire_debug() {
   fi
 
   echo
-  echo "PipeWire debug mode set to: $PIPEWIRE_DEBUG_MODE"
-  echo "  inherit  = smtty leaves PIPEWIRE_DEBUG alone"
-  echo "  0        = logging disabled"
-  echo "  1        = errors"
-  echo "  2        = warnings"
-  echo "  3        = informational messages"
+  echo "PipeWire debug: $PIPEWIRE_DEBUG_MODE"
   echo
   return 0
 }
 
 choose_pipewire_latency() {
   echo
-  echo "PipeWire latency hint (optional)."
-  echo "  This sets PIPEWIRE_LATENCY for gamescope only."
-  echo "  Use 'inherit' unless you know you need this."
-  echo "  Examples: 128/48000  64/48000"
-  echo
+  echo "PipeWire latency"
+  echo "  inherit or frames/rate, e.g. 128/48000"
 
   local cur="${PIPEWIRE_LATENCY:-inherit}"
   local val
   while :; do
-    val="$(read_default "PIPEWIRE_LATENCY" "$cur")"
+    val="$(read_default "Latency" "$cur")"
+    if [[ "$val" == "$QUIT_SENTINEL" ]]; then
+      SMTTY_QUIT_REQUESTED=1
+      return 1
+    fi
     if [[ "$val" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
@@ -2863,13 +2916,13 @@ choose_pipewire_latency() {
 
     if [[ "$val" == "inherit" ]]; then
       PIPEWIRE_LATENCY="inherit"
-      echo "PipeWire latency env set to: inherit"
+      echo "PipeWire latency: inherit"
       return 0
     fi
 
     if [[ "$val" =~ ^[0-9]+/[0-9]+$ ]]; then
       PIPEWIRE_LATENCY="$val"
-      echo "PipeWire latency env set to: $PIPEWIRE_LATENCY"
+      echo "PipeWire latency: $PIPEWIRE_LATENCY"
       return 0
     fi
 
@@ -2879,30 +2932,25 @@ choose_pipewire_latency() {
 
 choose_perf_env_preset() {
   echo
-  echo "Perf/shader cache preset (optional)."
-  echo "  Goal: reduce shader-compilation stutter on some titles across launches."
-  echo "  0 = off (default)"
-  echo "  1 = on  (enables extra caching; uses more disk space)"
-  echo "  Notes:"
-  echo "    - Applies only to this smtty session/profile (not global)."
-  echo "    - Not an FPS boost. May do nothing depending on game/renderer."
-  echo "    - What it sets (vendor-aware):"
-  echo "      * DXVK_STATE_CACHE=1"
-  echo "      * AMD/Intel (Mesa): MESA_SHADER_CACHE_MAX_SIZE=4G"
-  echo "      * NVIDIA (OpenGL): __GL_SHADER_DISK_CACHE=1"
-  echo
+  echo "Shader-cache preset"
+  echo "  [0] Off"
+  echo "  [1] On · vendor-aware caching; may use more disk"
 
   local cur="${PERF_ENV_PRESET:-0}"
   local val
   while :; do
-    val="$(read_default "PERF_ENV_PRESET (0/1)" "$cur")"
+    val="$(read_default "Choose (0/1)" "$cur")"
+    if [[ "$val" == "$QUIT_SENTINEL" ]]; then
+      SMTTY_QUIT_REQUESTED=1
+      return 1
+    fi
     if [[ "$val" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
 
     if [[ "$val" == "0" || "$val" == "1" ]]; then
       PERF_ENV_PRESET="$val"
-      echo "Perf env preset set to: $PERF_ENV_PRESET"
+      [[ "$val" == "1" ]] && echo "Shader cache: On" || echo "Shader cache: Off"
       return 0
     fi
 
@@ -2911,12 +2959,9 @@ choose_perf_env_preset() {
 }
 
 choose_ld_preload_mode() {
-  echo "LD_PRELOAD handling for gamescope / Steam:"
-  echo "  Clearing LD_PRELOAD avoids inherited overlays/shims (MangoHud, vkBasalt,"
-  echo "  etc.) from injecting into gamescope or the game."
-  echo
-  echo "  [1] Inherit current LD_PRELOAD (do nothing)"
-  echo "  [2] Clear LD_PRELOAD for gamescope and Steam"
+  echo "LD_PRELOAD"
+  echo "  [1] Inherit"
+  echo "  [2] Clear · avoids inherited overlays and shims"
 
   local default_choice
   case "$LD_PRELOAD_MODE" in
@@ -2926,7 +2971,11 @@ choose_ld_preload_mode() {
   esac
 
   local sel
-  sel=$(read_default "Choose LD_PRELOAD mode (1-2)" "$default_choice")
+  sel=$(read_default "Choose (1-2)" "$default_choice")
+  if [[ "$sel" == "$QUIT_SENTINEL" ]]; then
+    SMTTY_QUIT_REQUESTED=1
+    return 1
+  fi
   if [[ "$sel" == "$BACK_SENTINEL" ]]; then
     return 1
   fi
@@ -2940,18 +2989,16 @@ choose_ld_preload_mode() {
   esac
 
   echo
-  echo "LD_PRELOAD mode set to: $LD_PRELOAD_MODE"
-  echo "  inherit = pass through existing LD_PRELOAD"
-  echo "  clear   = export LD_PRELOAD=\"\" before gamescope"
+  echo "LD_PRELOAD: ${LD_PRELOAD_MODE^}"
   echo
   return 0
 }
 
 choose_audio_switch() {
-  echo "Temporary audio output switching (PulseAudio / PipeWire via pactl):"
+  echo "Audio switching"
 
   if ! command -v pactl >/dev/null 2>&1; then
-    echo "  pactl not found; audio device switching will be disabled."
+    echo "  pactl not found; disabled."
     AUDIO_SWITCH_ENABLED=0
     AUDIO_SINK_NAME=""
     echo
@@ -2959,7 +3006,11 @@ choose_audio_switch() {
   fi
 
   local en
-  en=$(read_default "Enable automatic audio output switch while gamescope is running? (0 = no, 1 = yes)" 0)
+  en=$(read_default "Switch output while running (0 = off, 1 = on)" 0)
+  if [[ "$en" == "$QUIT_SENTINEL" ]]; then
+    SMTTY_QUIT_REQUESTED=1
+    return 1
+  fi
   if [[ "$en" == "$BACK_SENTINEL" ]]; then
     return 1
   fi
@@ -3005,7 +3056,7 @@ choose_audio_switch() {
   fi
 
   echo
-  echo "Available audio outputs (PulseAudio / PipeWire sinks):"
+  echo "Audio outputs"
   local i
   for ((i = 0; i < ${#sink_names[@]}; i++)); do
     local desc="${sink_descs[i]}"
@@ -3020,11 +3071,11 @@ choose_audio_switch() {
   local choice
   while :; do
     if ((${#sink_names[@]} <= 9)); then
-      if ! read_one_key choice "Choose sink to use while gamescope is running [1-${#sink_names[@]}, b = back]: "; then
+      if ! read_one_key choice "Choose output [1-${#sink_names[@]}, b = back]: "; then
         return 1
       fi
     else
-      if ! backable_read choice "Choose sink to use while gamescope is running [1-${#sink_names[@]}, b = back]: "; then
+      if ! backable_read choice "Choose output [1-${#sink_names[@]}, b = back]: "; then
         return 1
       fi
     fi
@@ -3037,29 +3088,32 @@ choose_audio_switch() {
   AUDIO_SINK_NAME=${sink_names[choice-1]}
 
   echo
-  echo "Audio switcher will use:"
-  echo "  Description: ${sink_descs[choice-1]}"
-  echo "  Name:        ${AUDIO_SINK_NAME}"
+  echo "Audio output: ${sink_descs[choice-1]}"
   echo
   return 0
 }
 
 choose_pre_post_commands() {
-  echo "Optional pre / post shell commands for this profile:"
-  echo "  Pre-command runs asynchronously before gamescope starts."
-  echo "  Post-command runs when the gamescope session ends."
-  echo "  Leave empty to skip."
-  echo
+  echo "Hooks (optional)"
+  echo "  Pre runs before launch; post runs on exit. Empty disables."
 
   local pre
-  pre=$(read_default "Pre-command (empty = none)" "${PRE_CMD:-}")
+  pre=$(read_default "Pre command" "${PRE_CMD:-}")
+  if [[ "$pre" == "$QUIT_SENTINEL" ]]; then
+    SMTTY_QUIT_REQUESTED=1
+    return 1
+  fi
   if [[ "$pre" == "$BACK_SENTINEL" ]]; then
     return 1
   fi
   PRE_CMD="$pre"
 
   local post
-  post=$(read_default "Post-command (empty = none)" "${POST_CMD:-}")
+  post=$(read_default "Post command" "${POST_CMD:-}")
+  if [[ "$post" == "$QUIT_SENTINEL" ]]; then
+    SMTTY_QUIT_REQUESTED=1
+    return 1
+  fi
   if [[ "$post" == "$BACK_SENTINEL" ]]; then
     return 1
   fi
@@ -4915,6 +4969,7 @@ launch_gamescope_session() {
 
 interactive_new_config() {
   local from_menu=${1:-0}
+  local previous_quit_mode=${SMTTY_PROMPT_QUIT_ENABLED:-0}
 
   CURRENT_PROFILE=""
   PRE_CMD=""
@@ -4922,148 +4977,180 @@ interactive_new_config() {
   LD_PRELOAD_MODE="inherit"
   detect_session_mode
 
-  # Reset refresh-related fields so new profile does NOT inherit previous rates.
   G_FPS=0
   G_FPS_BG=0
+  SMTTY_PROMPT_QUIT_ENABLED=1
+  SMTTY_QUIT_REQUESTED=0
 
   local step=1
   while :; do
+    SMTTY_QUIT_REQUESTED=0
+
     case "$step" in
       1)
         if ! detect_steam_installations; then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          if (( SMTTY_QUIT_REQUESTED )); then
+            SMTTY_QUIT_REQUESTED=0
+            echo "Guided setup cancelled."
+            return 1
+          fi
           if (( from_menu )); then
-            echo "Returning to main menu."
             return 1
           fi
           echo "Aborting interactive setup."
-          exit 0
+          return 1
         fi
         if ! choose_steam_launch_mode; then
-          if (( from_menu )); then
-            echo "Returning to main menu."
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          if (( SMTTY_QUIT_REQUESTED )); then
+            SMTTY_QUIT_REQUESTED=0
+            echo "Guided setup cancelled."
             return 1
           fi
-          echo "Aborting interactive setup."
-          exit 0
+          return 1
         fi
         step=2
         ;;
       2)
-        if ! choose_drm_output; then
-          if (( from_menu )); then
-            echo "Returning to main menu."
-            return 1
-          fi
-          step=$((step - 1))
+        if choose_drm_output; then
+          step=3
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
+        else
+          step=1
+        fi
+        ;;
+      3)
+        if choose_resolution_profile; then
+          step=4
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
+        else
+          step=2
+        fi
+        ;;
+      4)
+        if choose_gamescope_rate; then
+          step=5
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
         else
           step=3
         fi
         ;;
-      3)
-        if ! choose_resolution_profile; then
-          if (( from_menu )); then
-            echo "Returning to main menu."
-            return 1
-          fi
-          step=$((step - 1))
+      5)
+        if choose_vrr_hdr_and_steamos; then
+          step=6
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
         else
           step=4
         fi
         ;;
-      4)
-        if ! choose_gamescope_rate; then
-          if (( from_menu )); then
-            echo "Returning to main menu."
-            return 1
-          fi
-          step=$((step - 1))
+      6)
+        if choose_pipewire_debug; then
+          step=7
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
         else
           step=5
         fi
         ;;
-      5)
-        if ! choose_vrr_hdr_and_steamos; then
-          if (( from_menu )); then
-            echo "Returning to main menu."
-            return 1
-          fi
-          step=$((step - 1))
+      7)
+        if choose_pipewire_latency; then
+          step=8
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
         else
           step=6
         fi
         ;;
-      6)
-        if ! choose_pipewire_debug; then
-          if (( from_menu )); then
-            echo "Returning to main menu."
-            return 1
-          fi
-          step=$((step - 1))
+      8)
+        if choose_perf_env_preset; then
+          step=9
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
         else
-          if ! choose_pipewire_latency; then
-            if (( from_menu )); then
-              echo "Returning to main menu."
-              return 1
-            fi
-            step=$((step - 1))
-          elif ! choose_perf_env_preset; then
-            if (( from_menu )); then
-              echo "Returning to main menu."
-              return 1
-            fi
-            step=$((step - 1))
-          else
-            step=7
-          fi
+          step=7
         fi
         ;;
-      7)
-        if ! choose_ld_preload_mode; then
-          if (( from_menu )); then
-            echo "Returning to main menu."
-            return 1
-          fi
-          step=$((step - 1))
+      9)
+        if choose_ld_preload_mode; then
+          step=10
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
         else
           step=8
         fi
         ;;
-      8)
-        if ! choose_audio_switch; then
-          if (( from_menu )); then
-            echo "Returning to main menu."
-            return 1
-          fi
-          step=$((step - 1))
+      10)
+        if choose_audio_switch; then
+          step=11
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
         else
           step=9
         fi
         ;;
-      9)
-        if ! choose_pre_post_commands; then
-          if (( from_menu )); then
-            echo "Returning to main menu."
-            return 1
-          fi
-          step=$((step - 1))
+      11)
+        if choose_pre_post_commands; then
+          step=12
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
         else
           step=10
         fi
         ;;
-      10)
-        if ! save_config; then
-          step=$((step - 1))
-          continue
+      12)
+        if save_config; then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          load_profile_by_name "$CURRENT_PROFILE" >/dev/null 2>&1 || HAVE_CONFIG=1
+          return 0
         fi
-
-        # After saving a new profile, return to the main menu so the user can
-        # review the settings and choose [1] to launch.
-        load_profile_by_name "$CURRENT_PROFILE" >/dev/null 2>&1 || HAVE_CONFIG=1
-        return 0
+        if (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
+        fi
+        step=11
         ;;
-
       *)
-        return 0
+        SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+        SMTTY_QUIT_REQUESTED=0
+        return 1
         ;;
     esac
   done
@@ -5334,43 +5421,299 @@ kill_gamescope() {
 }
 
 
-interactive_profile_settings_editor() {
+# SMTTY_COMPACT_UI_BEGIN
+smtty_ui_on_off() {
+  if (( ${1:-0} )); then
+    printf 'On'
+  else
+    printf 'Off'
+  fi
+}
+
+smtty_ui_title_case() {
+  local value=${1:-}
+  case "$value" in
+    native) printf 'Native' ;;
+    flatpak) printf 'Flatpak' ;;
+    inherit) printf 'Inherit' ;;
+    stretch) printf 'Stretch' ;;
+    none|"") printf 'Native' ;;
+    *) printf '%s' "${value^}" ;;
+  esac
+}
+
+smtty_print_compact_summary() {
+  local include_game=${1:-1}
+  local mangohud_state=${2:-}
+
   if (( HAVE_CONFIG == 0 )); then
+    echo "Profile: None"
+    if (( include_game )); then
+      echo "Game:    None"
+    fi
+    return 0
+  fi
+
+  local profile_name=${CURRENT_PROFILE:-default}
+  if (( ${SMTTY_PROFILE_DRAFT:-0} )); then
+    profile_name="Unsaved"
+  fi
+  local game_name="None"
+  local refresh="Auto"
+  local scaling
+  local steam
+  local grab
+  local vrr
+  local hdr
+  local wayland
+  local audio="unchanged"
+  local hooks="None"
+  local runtime
+
+  if (( G_FPS > 0 )); then
+    refresh="${G_FPS} Hz"
+  fi
+
+  scaling=$(smtty_ui_title_case "${STRETCH_FLAG:-none}")
+  steam=$(smtty_ui_title_case "${STEAM_TYPE:-native}")
+  grab=$(smtty_ui_on_off "${FORCE_GRAB_CURSOR:-0}")
+  vrr=$(smtty_ui_on_off "${ADAPTIVE_SYNC:-0}")
+  hdr=$(smtty_ui_on_off "${ENABLE_GAMESCOPE_HDR:-0}")
+  wayland=$(smtty_ui_on_off "${EXPOSE_WAYLAND:-0}")
+
+  if (( AUDIO_SWITCH_ENABLED )); then
+    audio="On"
+  fi
+
+  if [[ -n "${PRE_CMD:-}" && -n "${POST_CMD:-}" ]]; then
+    hooks="Pre + Post"
+  elif [[ -n "${PRE_CMD:-}" ]]; then
+    hooks="Pre"
+  elif [[ -n "${POST_CMD:-}" ]]; then
+    hooks="Post"
+  fi
+
+  if [[ -n "${SMTTY_APPLAUNCH_APPID:-}" ]]; then
+    game_name=${SMTTY_APPLAUNCH_NAME:-"App ${SMTTY_APPLAUNCH_APPID}"}
+    if [[ -f "${SMTTY_LOCKED_GAME_FILE:-/nonexistent}" ]]; then
+      game_name+=" (locked)"
+    fi
+  fi
+
+  printf 'Profile: %s\n' "$profile_name"
+  if (( include_game )); then
+    printf 'Game:    %s\n' "$game_name"
+  fi
+  echo
+  printf 'Display  %s · %s @ %s\n' "${DRM_SHORT:-Unknown}" "${DRM_NATIVE_MODE:-Unknown}" "$refresh"
+  printf 'Render   %sx%s · %s\n' "${GAME_W:-0}" "${GAME_H:-0}" "$scaling"
+  printf 'Steam    %s\n' "$steam"
+  printf 'Options  Grab %s · VRR %s · HDR %s · Wayland %s\n' "$grab" "$vrr" "$hdr" "$wayland"
+
+  runtime="PipeWire ${PIPEWIRE_DEBUG_MODE:-inherit}"
+  if [[ -n "$mangohud_state" ]]; then
+    runtime+=" · MangoHud ${mangohud_state}"
+  fi
+  runtime+=" · Audio ${audio}"
+  printf 'Runtime  %s\n' "$runtime"
+  printf 'Hooks    %s\n' "$hooks"
+}
+
+smtty_print_action_row() {
+  printf '  %-9s %-15s  %-9s %-16s  %-9s %s\n' \
+    "$1" "$2" "$3" "$4" "$5" "$6"
+}
+
+smtty_print_compact_actions() {
+  echo "Actions"
+  smtty_print_action_row "[P] [1]"  "Play"         "[G] [6]"  "Select game" "[O] [11]" "Launch options"
+  smtty_print_action_row "[S] [2]"  "Profiles"     "[N] [7]"  "New profile" "[D] [12]" "Delete profile"
+  smtty_print_action_row "[E] [3]"  "Edit profile" "[M] [8]"  "MangoHud"    "[W] [13]" "Wayland"
+  smtty_print_action_row "[L] [4]"  "Lock game"    "[U] [9]"  "Unlock game" "[C] [14]" "Clear game"
+  smtty_print_action_row "[T] [5]"  "Diagnostics"  "[V] [10]" "Version"     "[Q]"      "Quit"
+}
+# SMTTY_COMPACT_UI_END
+
+smtty_capture_profile_state() {
+  local var
+  local -a vars=(
+    CURRENT_PROFILE HAVE_CONFIG DRM_SHORT DRM_NATIVE_MODE NATIVE_W NATIVE_H
+    GAME_W GAME_H STRETCH_FLAG G_FPS G_FPS_BG STEAM_TYPE STEAM_LAUNCH_MODE
+    ADAPTIVE_SYNC ENABLE_GAMESCOPE_HDR GAMESCOPE_HDR_NITS FORCE_GRAB_CURSOR
+    EXPOSE_WAYLAND LOW_LATENCY_TEARING PIPEWIRE_DEBUG_MODE PIPEWIRE_LATENCY
+    PERF_ENV_PRESET LD_PRELOAD_MODE AUDIO_SWITCH_ENABLED AUDIO_SINK_NAME
+    PRE_CMD POST_CMD SMTTY_EDID_HDR_PEAK_NITS SMTTY_ACTIVE_GPU_VENDOR
+  )
+
+  for var in "${vars[@]}"; do
+    printf '%s=%q\n' "$var" "${!var-}"
+  done
+}
+
+smtty_init_recommended_profile() {
+  CURRENT_PROFILE=""
+  HAVE_CONFIG=1
+  DRM_SHORT=""
+  DRM_NATIVE_MODE=""
+  NATIVE_W=0
+  NATIVE_H=0
+  GAME_W=0
+  GAME_H=0
+  STRETCH_FLAG="none"
+  G_FPS=0
+  G_FPS_BG=0
+  STEAM_TYPE=""
+  STEAM_LAUNCH_MODE="gamepad"
+  ADAPTIVE_SYNC=0
+  ENABLE_GAMESCOPE_HDR=0
+  GAMESCOPE_HDR_NITS=1000
+  FORCE_GRAB_CURSOR=0
+  EXPOSE_WAYLAND=0
+  LOW_LATENCY_TEARING=0
+  PIPEWIRE_DEBUG_MODE=0
+  PIPEWIRE_LATENCY="inherit"
+  PERF_ENV_PRESET=0
+  LD_PRELOAD_MODE="inherit"
+  AUDIO_SWITCH_ENABLED=0
+  AUDIO_SINK_NAME=""
+  PRE_CMD=""
+  POST_CMD=""
+
+  detect_session_mode
+  detect_steam_installations || return 1
+  choose_drm_output || return 1
+
+  GAME_W=$NATIVE_W
+  GAME_H=$NATIVE_H
+  STRETCH_FLAG="none"
+  init_default_refresh_for_output
+  return 0
+}
+
+interactive_new_profile() {
+  local saved_state
+  saved_state=$(smtty_capture_profile_state)
+
+  while :; do
+    smtty_ui_menu_break
+    echo "New profile"
     echo
-    echo "No profile loaded. Create one first (use [N] in the main menu)."
+    echo "Start from"
+    if (( HAVE_CONFIG )); then
+      printf '  [1] Current profile · %s\n' "${CURRENT_PROFILE:-default}"
+    else
+      echo "  [1] Current profile · unavailable"
+    fi
+    echo "  [2] Recommended defaults"
+    echo "  [3] Guided setup"
+    echo "  [Q] Cancel"
+    echo
+
+    local choice=""
+    printf 'Choose [1]: '
+    IFS= read -rsn1 choice || return 1
+    printf '\n'
+    [[ -z "$choice" || "$choice" == $'\r' || "$choice" == $'\n' ]] && choice=1
+    choice="${choice,,}"
+
+    case "$choice" in
+      1)
+        if (( HAVE_CONFIG == 0 )); then
+          echo "No current profile to copy."
+          continue
+        fi
+        CURRENT_PROFILE=""
+        HAVE_CONFIG=1
+        ;;
+      2)
+        eval "$saved_state"
+        if ! smtty_init_recommended_profile; then
+          eval "$saved_state"
+          echo "Could not build recommended defaults."
+          continue
+        fi
+        ;;
+      3)
+        eval "$saved_state"
+        if interactive_new_config 1; then
+          return 0
+        fi
+        eval "$saved_state"
+        return 1
+        ;;
+      q|b)
+        eval "$saved_state"
+        return 1
+        ;;
+      *)
+        echo "Choose 1, 2, 3, or Q."
+        continue
+        ;;
+    esac
+
+    SMTTY_PROFILE_DRAFT=1
+    if interactive_profile_settings_editor new; then
+      unset SMTTY_PROFILE_DRAFT
+      return 0
+    else
+      local status=$?
+      unset SMTTY_PROFILE_DRAFT
+      eval "$saved_state"
+      if (( status == 2 )); then
+        continue
+      fi
+      return 1
+    fi
+  done
+}
+
+interactive_profile_settings_editor() {
+  local mode=${1:-edit}
+  local is_new=0
+  [[ "$mode" == "new" ]] && is_new=1
+
+  if (( ! is_new && HAVE_CONFIG == 0 )); then
+    echo
+    echo "No profile loaded. Create one first."
     read -r -p "Press Enter to return..." _smtty_edit_pause || true
     return 0
   fi
 
-  local prof="${CURRENT_PROFILE:-}"
-  [[ -z "$prof" ]] && prof="default"
+  local prof="${CURRENT_PROFILE:-default}"
 
   while :; do
     smtty_ui_menu_break
     detect_session_mode
     init_default_refresh_for_output
 
-    echo "Edit profile: ${prof}"
+    if (( is_new )); then
+      echo "New profile · unsaved"
+      echo
+      echo "Review this draft. Change only what you need, then save."
+    else
+      echo "Edit profile: ${prof}"
+      echo
+      echo "Select a section to modify."
+    fi
     echo
-    print_config_summary
+    smtty_print_compact_summary 0 ""
     echo
 
-    echo "Edit sections:"
-    echo "  [1] Steam (native/flatpak + launch mode)"
-    echo "  [2] Output (DRM connector)"
-    echo "  [3] Resolution / scaling"
-    echo "  [4] Refresh + FPS limits"
-    echo "  [5] VRR / HDR / cursor / expose-wayland / low-latency"
-    echo "  [6] PipeWire (debug + latency)"
-    echo "  [7] Perf env preset"
-    echo "  [8] LD_PRELOAD mode"
-    echo "  [9] Audio switching"
-    echo "  [0] Pre/Post commands"
-    echo "  [S] Save profile"
-    echo "  [b] Back"
+    echo "Sections"
+    smtty_print_action_row "[T] [1]" "Steam"        "[D] [5]" "Display"      "[R] [8]" "Resolution"
+    smtty_print_action_row "[F] [2]" "Refresh"      "[E] [6]" "Features"     "[P] [9]" "PipeWire"
+    smtty_print_action_row "[C] [3]" "Shader cache" "[L] [7]" "LD_PRELOAD"   "[A] [10]" "Audio"
+    if (( is_new )); then
+      smtty_print_action_row "[H] [4]" "Hooks" "[S]" "Save" "[Q]" "Cancel"
+    else
+      smtty_print_action_row "[H] [4]" "Hooks" "[S]" "Save" "[B]" "Back"
+    fi
 
     local c
-    if ! read_key_or_number c "Choose section [1-9,0,S,b]: " ; then
+    if ! read_key_or_number c "Choose: "; then
+      if (( is_new )); then
+        return 2
+      fi
       return 0
     fi
     c="${c//[[:space:]]/}"
@@ -5378,73 +5721,72 @@ interactive_profile_settings_editor() {
     [[ -z "$c" ]] && continue
 
     case "$c" in
-      1)
+      t|1)
         if ! detect_steam_installations; then
           echo "[ERROR] Steam not found."
-          read -r -p "Press Enter..." _smtty_edit_pause2 || true
           continue
         fi
-        if choose_steam_launch_mode; then
-          save_config || true
-        fi
+        if choose_steam_launch_mode && (( ! is_new )); then save_config || true; fi
         ;;
-      2)
-        if choose_drm_output; then
+      d|5)
+        if choose_drm_output && (( ! is_new )); then
           save_config || true
           prof="${CURRENT_PROFILE:-$prof}"
         fi
         ;;
-      3)
-        if choose_resolution_profile; then
-          save_config || true
-        fi
+      r|8)
+        if choose_resolution_profile && (( ! is_new )); then save_config || true; fi
         ;;
-      4)
-        if choose_gamescope_rate; then
-          save_config || true
-        fi
+      f|2)
+        if choose_gamescope_rate && (( ! is_new )); then save_config || true; fi
         ;;
-      5)
-        if choose_vrr_hdr_and_steamos; then
-          save_config || true
-        fi
+      e|6)
+        if choose_vrr_hdr_and_steamos && (( ! is_new )); then save_config || true; fi
         ;;
-      6)
+      p|9)
         if choose_pipewire_debug; then
-          if choose_pipewire_latency; then
-            save_config || true
-          fi
+          if choose_pipewire_latency && (( ! is_new )); then save_config || true; fi
         fi
         ;;
-      7)
-        if choose_perf_env_preset; then
-          save_config || true
-        fi
+      c|3)
+        if choose_perf_env_preset && (( ! is_new )); then save_config || true; fi
         ;;
-      8)
-        if choose_ld_preload_mode; then
-          save_config || true
-        fi
+      l|7)
+        if choose_ld_preload_mode && (( ! is_new )); then save_config || true; fi
         ;;
-      9)
-        if choose_audio_switch; then
-          save_config || true
-        fi
+      a|10)
+        if choose_audio_switch && (( ! is_new )); then save_config || true; fi
         ;;
-      0)
-        if choose_pre_post_commands; then
-          save_config || true
-        fi
+      h|4)
+        if choose_pre_post_commands && (( ! is_new )); then save_config || true; fi
         ;;
       s)
-        save_config || true
-        read -r -p "Press Enter to return..." _smtty_save_pause || true
+        if save_config; then
+          if (( is_new )); then
+            load_profile_by_name "$CURRENT_PROFILE" >/dev/null 2>&1 || HAVE_CONFIG=1
+            return 0
+          fi
+          read -r -p "Press Enter to return..." _smtty_save_pause || true
+        fi
+        ;;
+      q)
+        if (( is_new )); then
+          local discard=""
+          read -r -p "Discard unsaved profile? [y/N]: " discard
+          case "$discard" in
+            y|Y|yes|YES) return 1 ;;
+            *) continue ;;
+          esac
+        fi
         ;;
       b)
+        if (( is_new )); then
+          return 2
+        fi
         return 0
         ;;
       *)
-        echo "Enter 1-9, 0, S, or b."
+        echo "Choose a listed letter or number."
         ;;
     esac
   done
@@ -5456,104 +5798,74 @@ interactive_profile_menu() {
     smtty_ui_menu_break
     detect_session_mode
     init_default_refresh_for_output
-    print_config_summary
-    echo
-    local lock_state="unlocked"
-    [[ -f "$SMTTY_LOCKED_GAME_FILE" ]] && lock_state="LOCKED"
-    if [[ -n "${SMTTY_APPLAUNCH_APPID:-}" ]]; then
-      local disp_name="${SMTTY_APPLAUNCH_NAME:-}"
-      [[ -z "$disp_name" ]] && disp_name="appid ${SMTTY_APPLAUNCH_APPID}"
-      echo "Selected game: ${disp_name} (${SMTTY_APPLAUNCH_APPID}) [$lock_state]"
-    else
-      echo "Selected game: (none) [$lock_state]"
-    fi
-    echo
-    local mh_state="OFF"
+
+    local mh_state="Off"
     if (( FLAG_MANGOHUD )); then
-      mh_state="ON"
+      mh_state="On"
     fi
 
-    local ew_state="OFF"
-    if (( EXPOSE_WAYLAND )); then
-      ew_state="ON"
-    fi
-    local ew_note=""
-    if (( HAVE_CONFIG == 0 )); then
-      ew_note=" (unavailable: no profile)"
-    fi
-
-    echo "Options:"
-    echo "  [G] [1]  Pick installed Steam game to auto-launch"
-    echo "  [L] [2]  Lock selected game (persist across runs)"
-    echo "  [U] [3]  Unlock selected game (stop persisting)"
-    echo "  [M] [4]  Toggle MangoHud (currently: ${mh_state})"
-    echo "  [T] [5]  Gamescope tips (--doctor)"
-    echo "  [C] [6]  Clear selected game"
-    echo "  [V] [7]  Check smtty version"
-    echo "  [P] [8]  Play this profile"
-    echo "  [S] [9]  Select a profile"
-    echo "  [N] [10] Create new profile"
-    echo "  [D] [11] Delete a profile"
-    echo "  [O] [12] Steam launch options for this profile"
-    echo "  [W] [13] Toggle Expose Wayland (--expose-wayland) (currently: ${ew_state})${ew_note}"
-    echo "  [E] [14] Edit current profile settings"
-    echo "  [Q] Quit"
+    echo "Steam Machine TTY Wrapper"
+    echo
+    smtty_print_compact_summary 1 "$mh_state"
+    echo
+    smtty_print_compact_actions
+    echo
 
     local choice
-    if ! read_key_or_number choice "Choose option [G,L,U,M,T,C,V,P,S,N,D,O,W,E,Q,1-14,q]: " ; then
+    if ! read_key_or_number choice "Choose: "; then
       echo "Exiting."
       exit 0
     fi
     choice="${choice//[[:space:]]/}"
     choice="${choice,,}"
     [[ -z "$choice" ]] && continue
+
     case "$choice" in
-      m|4)
+      m|8)
         if (( FLAG_MANGOHUD )); then
           FLAG_MANGOHUD=0
-          echo "MangoHud: OFF"
+          echo "MangoHud: Off"
         else
           if command -v mangohud >/dev/null 2>&1; then
             FLAG_MANGOHUD=1
-            echo "MangoHud: ON"
+            echo "MangoHud: On"
           else
             detect_pkg_manager
             local pkg=""
             pkg="$(pkg_for_cmd mangohud || true)"
             echo "[ERROR] MangoHud is not installed."
             if [[ -n "$pkg" ]]; then
-              echo "Install it with: ${PKG_INSTALL_CMD} $pkg"
+              echo "Install: ${PKG_INSTALL_CMD} $pkg"
             else
-              echo "Install MangoHud (package name may vary by distro)."
+              echo "Install MangoHud with your distro package manager."
             fi
           fi
         fi
         ;;
       w|13)
         if (( HAVE_CONFIG == 0 )); then
-          echo "No profile loaded. Create one first (use [N])."
+          echo "No profile loaded. Create one first."
         else
           if (( EXPOSE_WAYLAND )); then
             EXPOSE_WAYLAND=0
-            echo "Expose Wayland: OFF"
+            echo "Wayland exposure: Off"
           else
             EXPOSE_WAYLAND=1
-            echo "Expose Wayland: ON (can break some games)"
+            echo "Wayland exposure: On (may break some games)"
           fi
           save_config || true
         fi
         ;;
-      e|14)
+      e|3)
         interactive_profile_settings_editor
         ;;
-
-      p|8)
+      p|1)
         run_from_current_config
         ;;
-      s|9)
+      s|2)
         if select_profile_interactive "use"; then
           if load_profile_by_name "$CURRENT_PROFILE"; then
-            echo "Switched to profile: ${CURRENT_PROFILE} (saved as default)"
+            echo "Profile: ${CURRENT_PROFILE}"
           else
             echo "[ERROR] Failed to load profile: ${CURRENT_PROFILE}"
           fi
@@ -5562,13 +5874,11 @@ interactive_profile_menu() {
         fi
         continue
         ;;
-      n|10)
-        if ! interactive_new_config 1; then
-          continue
-        fi
+      n|7)
+        interactive_new_profile || true
         continue
         ;;
-      d|11)
+      d|12)
         if select_profile_interactive "delete"; then
           delete_profile "$CURRENT_PROFILE" || true
         else
@@ -5576,57 +5886,54 @@ interactive_profile_menu() {
         fi
         continue
         ;;
-      g|1)
+      g|6)
         if pick_installed_steam_game; then
-          echo "Selected game: ${SMTTY_APPLAUNCH_NAME} (${SMTTY_APPLAUNCH_APPID})"
+          echo "Game: ${SMTTY_APPLAUNCH_NAME} (${SMTTY_APPLAUNCH_APPID})"
           rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
-          echo "Lock cleared. Use [L] to lock the selected game."
+          echo "Selection is temporary. Use [L] or [4] to persist it."
         fi
         ;;
       t|h|5)
         echo
         smtty_doctor
         echo
-        read -r -p "Press Enter to return to menu..." _smtty_doc_pause || true
+        read -r -p "Press Enter to return..." _smtty_doc_pause || true
         ;;
-      l|2)
+      l|4)
         smtty_lock_selected_game || true
         ;;
-      u|3)
+      u|9)
         smtty_unlock_selected_game || true
         ;;
-      c|6)
+      c|14)
         SMTTY_APPLAUNCH_APPID=""
         SMTTY_APPLAUNCH_NAME=""
         export SMTTY_APPLAUNCH_APPID SMTTY_APPLAUNCH_NAME
         rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
-        echo "Selected game cleared."
+        echo "Game selection cleared."
         ;;
-      v|7)
+      v|10)
         echo
         smtty_print_version
         echo
-        read -r -p "Press Enter to return to menu..." _smtty_ver_pause || true
+        read -r -p "Press Enter to return..." _smtty_ver_pause || true
         ;;
-      o|12)
+      o|11)
         echo
-        # Run in a subshell so any `exit` inside the generator doesn't kill the menu.
         ( print_steam_launch_options ) || true
         echo
-        read -r -p "Press Enter to return to menu..." _smtty_o_pause || true
+        read -r -p "Press Enter to return..." _smtty_o_pause || true
         ;;
-
       q|b)
         echo "Exiting."
         exit 0
         ;;
       *)
-        echo "Enter G, L, U, M, T, C, V, P, S, N, D, O, W, E, Q, 1-14, or q."
+        echo "Choose a listed action."
         ;;
     esac
   done
 }
-
 cleanup_old_session_artifacts() {
   # Best-effort: remove stale gamescope-session logs, pidfiles, and FIFOs from crashes.
   # Keeps recent files (current run uses $$ anyway).

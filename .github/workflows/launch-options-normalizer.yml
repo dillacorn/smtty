@@ -1,15 +1,23 @@
-name: Launch-option normalizer tests
+name: smtty tests
 
 on:
   push:
     paths:
       - smtty
       - tests/test-launch-options-normalizer.sh
+      - tests/test-compact-ui.sh
+      - tests/test-compact-prompts.sh
+      - tests/test-profile-workflow.sh
+      - tests/test-guided-quit.sh
       - .github/workflows/launch-options-normalizer.yml
   pull_request:
     paths:
       - smtty
       - tests/test-launch-options-normalizer.sh
+      - tests/test-compact-ui.sh
+      - tests/test-compact-prompts.sh
+      - tests/test-profile-workflow.sh
+      - tests/test-guided-quit.sh
       - .github/workflows/launch-options-normalizer.yml
 
 permissions:
@@ -23,21 +31,33 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Check executable mode
+        run: test -x smtty
+
       - name: Check Bash syntax
         run: |
           bash -n smtty
           bash -n tests/test-launch-options-normalizer.sh
+          bash -n tests/test-compact-ui.sh
+          bash -n tests/test-compact-prompts.sh
+          bash -n tests/test-profile-workflow.sh
+          bash -n tests/test-guided-quit.sh
 
-      - name: Run launch-option parser cases
-        run: bash tests/test-launch-options-normalizer.sh
+      - name: Run test suites
+        run: |
+          bash tests/test-launch-options-normalizer.sh
+          bash tests/test-compact-ui.sh
+          bash tests/test-compact-prompts.sh
+          bash tests/test-profile-workflow.sh
+          bash tests/test-guided-quit.sh
 
       - name: Install ShellCheck
         run: |
           sudo apt-get update
           sudo apt-get install -y shellcheck
 
-      - name: Run ShellCheck error pass
-        run: shellcheck -S error smtty tests/test-launch-options-normalizer.sh
+      - name: Run ShellCheck
+        run: shellcheck -S error smtty tests/test-launch-options-normalizer.sh tests/test-compact-ui.sh tests/test-compact-prompts.sh tests/test-profile-workflow.sh tests/test-guided-quit.sh
 
-      - name: Check whitespace errors
+      - name: Check whitespace
         run: git diff --check
