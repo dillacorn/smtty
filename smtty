@@ -5431,11 +5431,11 @@ smtty_print_compact_summary() {
 
 smtty_print_compact_actions() {
   echo "Actions"
-  printf '  %-19s %-21s %s\n' "[P] Play" "[G] Select game" "[O] Launch options"
-  printf '  %-19s %-21s %s\n' "[S] Profiles" "[N] New profile" "[D] Delete profile"
-  printf '  %-19s %-21s %s\n' "[E] Edit profile" "[M] MangoHud" "[W] Wayland"
-  printf '  %-19s %-21s %s\n' "[L] Lock game" "[U] Unlock game" "[C] Clear game"
-  printf '  %-19s %-21s %s\n' "[T] Diagnostics" "[V] Version" "[Q] Quit"
+  printf '  %-23s %-23s %s\n' "[P/8] Play" "[G/1] Select game" "[O/12] Launch options"
+  printf '  %-23s %-23s %s\n' "[S/9] Profiles" "[N/10] New profile" "[D/11] Delete profile"
+  printf '  %-23s %-23s %s\n' "[E/14] Edit profile" "[M/4] MangoHud" "[W/13] Wayland"
+  printf '  %-23s %-23s %s\n' "[L/2] Lock game" "[U/3] Unlock game" "[C/6] Clear game"
+  printf '  %-23s %-23s %s\n' "[T/5] Diagnostics" "[V/7] Version" "[Q] Quit"
 }
 # SMTTY_COMPACT_UI_END
 
@@ -5647,7 +5647,7 @@ interactive_profile_menu() {
         if pick_installed_steam_game; then
           echo "Game: ${SMTTY_APPLAUNCH_NAME} (${SMTTY_APPLAUNCH_APPID})"
           rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
-          echo "Selection is temporary. Use [L] to persist it."
+          echo "Selection is temporary. Use [L/2] to persist it."
         fi
         ;;
       t|h|5)
