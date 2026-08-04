@@ -26,11 +26,11 @@ jobs:
 
           path = Path("tools/renumber-compact-menus.py")
           text = path.read_text(encoding="utf-8")
-          old = '''        ('smtty_print_action_row "[H] [0]" "Hooks"', 'smtty_print_action_row "[H] [10]" "Hooks"', "new hooks label"),
-'''
-          new = '''        ('smtty_print_action_row "[H] [0]" "Hooks" "[S]" "Save" "[Q]" "Cancel"', 'smtty_print_action_row "[H] [10]" "Hooks" "[S]" "Save" "[Q]" "Cancel"', "new hooks label"),
-        ('smtty_print_action_row "[H] [0]" "Hooks" "[S]" "Save" "[B]" "Back"', 'smtty_print_action_row "[H] [10]" "Hooks" "[S]" "Save" "[B]" "Back"', "edit hooks label"),
-'''
+          old = "        ('smtty_print_action_row \"[H] [0]\" \"Hooks\"', 'smtty_print_action_row \"[H] [10]\" \"Hooks\"', \"new hooks label\"),\n"
+          new = (
+              "        ('smtty_print_action_row \"[H] [0]\" \"Hooks\" \"[S]\" \"Save\" \"[Q]\" \"Cancel\"', 'smtty_print_action_row \"[H] [10]\" \"Hooks\" \"[S]\" \"Save\" \"[Q]\" \"Cancel\"', \"new hooks label\"),\n"
+              "        ('smtty_print_action_row \"[H] [0]\" \"Hooks\" \"[S]\" \"Save\" \"[B]\" \"Back\"', 'smtty_print_action_row \"[H] [10]\" \"Hooks\" \"[S]\" \"Save\" \"[B]\" \"Back\"', \"edit hooks label\"),\n"
+          )
           if text.count(old) != 1:
               raise SystemExit("duplicate Hooks bootstrap pattern did not match once")
           path.write_text(text.replace(old, new, 1), encoding="utf-8")
