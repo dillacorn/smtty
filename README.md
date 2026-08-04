@@ -3,6 +3,30 @@
 A ~~minimal~~ TTY “Steam Machine” launcher that runs Steam Big Picture inside Gamescope on a chosen monitor, with per-user saved settings and configurable internal resolution (including 4:3/16:10 stretch).
 
 
+## Install
+
+**Latest release:** [v14.0 release notes and installation](https://github.com/dillacorn/smtty/releases/tag/14.0)
+
+### Arch Linux / AUR
+
+```bash
+paru -S smtty
+# or
+yay -S smtty
+```
+
+### Manual user-local install
+
+```bash
+git clone https://github.com/dillacorn/smtty.git
+cd smtty
+chmod +x smtty-installer
+./smtty-installer
+```
+
+The installer uses `~/.local/bin` by default. Run `smtty` after installation. Steam and Gamescope must already be installed.
+
+
 ## Discussions and testers wanted
 I’m actively looking for testers, especially on hardware different from mine.  
 Use Discussions for hardware-specific quirks, tuning, and “is this a bug or my setup?” debugging.
