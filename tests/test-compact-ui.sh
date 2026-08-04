@@ -15,9 +15,6 @@ if [[ ! -s "$helper_file" ]]; then
   exit 1
 fi
 
-# The More menu depends on this function, but layout tests never call it.
-read_key_or_number() { return 1; }
-
 # shellcheck disable=SC1090
 source "$helper_file"
 
@@ -63,11 +60,23 @@ summary_lines=$(printf '%s\n' "$summary" | wc -l)
 (( summary_lines <= 10 )) || fail "summary is too tall: $summary_lines lines"
 
 action_lines=$(printf '%s\n' "$actions" | wc -l)
-(( action_lines <= 5 )) || fail "actions are too tall: $action_lines lines"
+(( action_lines <= 6 )) || fail "actions are too tall: $action_lines lines"
 [[ "$actions" == *"[P] Play"* ]] || fail "play action missing"
 [[ "$actions" == *"[G] Select game"* ]] || fail "game action missing"
 [[ "$actions" == *"[O] Launch options"* ]] || fail "launch-options action missing"
-[[ "$actions" == *"[A] More"* ]] || fail "more action missing"
+[[ "$actions" == *"[S] Profiles"* ]] || fail "profiles action missing"
+[[ "$actions" == *"[N] New profile"* ]] || fail "new-profile action missing"
+[[ "$actions" == *"[D] Delete profile"* ]] || fail "delete-profile action missing"
+[[ "$actions" == *"[E] Edit profile"* ]] || fail "edit action missing"
+[[ "$actions" == *"[M] MangoHud"* ]] || fail "MangoHud action missing"
+[[ "$actions" == *"[W] Wayland"* ]] || fail "Wayland action missing"
+[[ "$actions" == *"[L] Lock game"* ]] || fail "lock action missing"
+[[ "$actions" == *"[U] Unlock game"* ]] || fail "unlock action missing"
+[[ "$actions" == *"[C] Clear game"* ]] || fail "clear action missing"
+[[ "$actions" == *"[T] Diagnostics"* ]] || fail "diagnostics action missing"
+[[ "$actions" == *"[V] Version"* ]] || fail "version action missing"
+[[ "$actions" == *"[Q] Quit"* ]] || fail "quit action missing"
+[[ "$actions" != *"[A] More"* ]] || fail "More submenu action remains"
 
 menu_block=$(
   sed -n \
@@ -82,6 +91,9 @@ editor_block=$(
 
 [[ "$menu_block" == *"smtty_print_compact_summary"* ]] || fail "main menu does not use compact summary"
 [[ "$menu_block" == *"smtty_print_compact_actions"* ]] || fail "main menu does not use compact actions"
+[[ "$menu_block" == *'echo "Steam Machine TTY Wrapper"'* ]] || fail "product title missing"
+[[ "$menu_block" != *"smtty_more_actions_menu"* ]] || fail "More submenu dispatch remains"
+[[ "$menu_block" != *"smtty %s"* ]] || fail "version banner remains at top"
 [[ "$menu_block" != *'echo "Options:"'* ]] || fail "legacy tall Options list remains"
 [[ "$editor_block" == *'echo "Sections"'* ]] || fail "editor compact sections missing"
 [[ "$editor_block" != *'echo "Edit sections:"'* ]] || fail "legacy editor section list remains"

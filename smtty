@@ -5432,38 +5432,10 @@ smtty_print_compact_summary() {
 smtty_print_compact_actions() {
   echo "Actions"
   printf '  %-19s %-21s %s\n' "[P] Play" "[G] Select game" "[O] Launch options"
-  printf '  %-19s %-21s %s\n' "[S] Profiles" "[E] Edit profile" "[M] MangoHud"
-  printf '  %-19s %-21s %s\n' "[W] Wayland" "[T] Diagnostics" "[A] More"
-  echo "  [Q] Quit"
-}
-
-smtty_more_actions_menu() {
-  echo
-  echo "More actions"
-  printf '  %-20s %-20s %s\n' "[L] Lock game" "[U] Unlock game" "[C] Clear game"
-  printf '  %-20s %-20s %s\n' "[N] New profile" "[D] Delete profile" "[V] Version"
-  echo "  [B] Back"
-
-  local selected
-  if ! read_key_or_number selected "Choose [L,U,C,N,D,V,B]: "; then
-    return 1
-  fi
-  selected="${selected//[[:space:]]/}"
-  selected="${selected,,}"
-
-  case "$selected" in
-    l|u|c|n|d|v)
-      REPLY=$selected
-      return 0
-      ;;
-    b|q|"")
-      return 1
-      ;;
-    *)
-      echo "Choose L, U, C, N, D, V, or B."
-      return 1
-      ;;
-  esac
+  printf '  %-19s %-21s %s\n' "[S] Profiles" "[N] New profile" "[D] Delete profile"
+  printf '  %-19s %-21s %s\n' "[E] Edit profile" "[M] MangoHud" "[W] Wayland"
+  printf '  %-19s %-21s %s\n' "[L] Lock game" "[U] Unlock game" "[C] Clear game"
+  printf '  %-19s %-21s %s\n' "[T] Diagnostics" "[V] Version" "[Q] Quit"
 }
 # SMTTY_COMPACT_UI_END
 
@@ -5587,27 +5559,21 @@ interactive_profile_menu() {
       mh_state="On"
     fi
 
-    printf 'smtty %s\n\n' "$SMTTY_VERSION"
+    echo "Steam Machine TTY Wrapper"
+    echo
     smtty_print_compact_summary 1 "$mh_state"
     echo
     smtty_print_compact_actions
     echo
 
     local choice
-    if ! read_key_or_number choice "Choose [P,G,O,S,E,M,W,T,A,Q]: "; then
+    if ! read_key_or_number choice "Choose: "; then
       echo "Exiting."
       exit 0
     fi
     choice="${choice//[[:space:]]/}"
     choice="${choice,,}"
     [[ -z "$choice" ]] && continue
-
-    if [[ "$choice" == "a" ]]; then
-      if ! smtty_more_actions_menu; then
-        continue
-      fi
-      choice=$REPLY
-    fi
 
     case "$choice" in
       m|4)
@@ -5681,7 +5647,7 @@ interactive_profile_menu() {
         if pick_installed_steam_game; then
           echo "Game: ${SMTTY_APPLAUNCH_NAME} (${SMTTY_APPLAUNCH_APPID})"
           rm -f "$SMTTY_LOCKED_GAME_FILE" 2>/dev/null || true
-          echo "Selection is temporary. Use More > Lock game to persist it."
+          echo "Selection is temporary. Use [L] to persist it."
         fi
         ;;
       t|h|5)
@@ -5720,7 +5686,7 @@ interactive_profile_menu() {
         exit 0
         ;;
       *)
-        echo "Choose P, G, O, S, E, M, W, T, A, or Q."
+        echo "Choose a listed action."
         ;;
     esac
   done
