@@ -5406,7 +5406,7 @@ smtty_print_compact_summary() {
   if [[ -n "${SMTTY_APPLAUNCH_APPID:-}" ]]; then
     game_name=${SMTTY_APPLAUNCH_NAME:-"App ${SMTTY_APPLAUNCH_APPID}"}
     if [[ -f "${SMTTY_LOCKED_GAME_FILE:-/nonexistent}" ]]; then
-      game_name+=" · Locked"
+      game_name+=" (locked)"
     fi
   fi
 

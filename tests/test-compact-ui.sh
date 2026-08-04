@@ -49,12 +49,17 @@ summary=$(smtty_print_compact_summary 1 "Off")
 actions=$(smtty_print_compact_actions)
 
 [[ "$summary" == *"Profile: Zowie-43-Hyprland"* ]] || fail "profile name missing"
-[[ "$summary" == *"Game:    Counter-Strike 2 · Locked"* ]] || fail "selected game state missing"
+[[ "$summary" == *"Game:    Counter-Strike 2 (locked)"* ]] || fail "selected game state missing"
 [[ "$summary" == *"Display  DP-1 · 1920x1080 @ 400 Hz"* ]] || fail "display summary missing"
 [[ "$summary" == *"Render   1600x1200 · Stretch"* ]] || fail "render summary missing"
 [[ "$summary" == *"Options  Grab On · VRR Off · HDR Off · Wayland Off"* ]] || fail "feature summary missing"
 [[ "$summary" == *"Runtime  PipeWire 0 · MangoHud Off · Audio unchanged"* ]] || fail "runtime summary missing"
 [[ "$summary" == *"Hooks    None"* ]] || fail "hook summary missing"
+
+rm -f "$lock_file"
+unlocked_summary=$(smtty_print_compact_summary 1 "Off")
+[[ "$unlocked_summary" == *"Game:    Counter-Strike 2"* ]] || fail "unlocked game name missing"
+[[ "$unlocked_summary" != *"(locked)"* ]] || fail "unlocked game incorrectly marked locked"
 
 summary_lines=$(printf '%s\n' "$summary" | wc -l)
 (( summary_lines <= 10 )) || fail "summary is too tall: $summary_lines lines"
