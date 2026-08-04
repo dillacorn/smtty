@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=${GITHUB_REPOSITORY:-dillacorn/smtty}
+trigger_branch=${GITHUB_HEAD_REF:-agent/publish-v14-release}
+
+python3 - <<'PY'
+from pathlib import Path
+
+smtty_path = Path("smtty")
+smtty = smtty_path.read_text(encoding="utf-8")
+old_version = 'SMTTY_VERSION="${SMTTY_VERSION:-v13.6}"'
+new_version = 'SMTTY_VERSION="${SMTTY_VERSION:-v14.0}"'
+if old_version in smtty:
+    if smtty.count(old_version) != 1:
+        raise SystemExit("unexpected v13.6 declaration count")
+    smtty = smtty.replace(old_version, new_version, 1)
+elif smtty.count(new_version) != 1:
+    raise SystemExit("could not locate a valid smtty version declaration")
+smtty_path.write_text(smtty, encoding="utf-8")
+
+readme_path = Path("README.md")
+readme = readme_path.read_text(encoding="utf-8")
+anchor = 'A ~~minimal~~ TTY “Steam Machine” launcher that runs Steam Big Picture inside Gamescope on a chosen monitor, with per-user saved settings and configurable internal resolution (including 4:3/16:10 stretch).\n'
+install = '''
+
+## Install
+
+**Latest release:** [v14.0 release notes and installation](https://github.com/dillacorn/smtty/releases/tag/14.0)
+
+### Arch Linux / AUR
+
+```bash
+paru -S smtty
+# or
+yay -S smtty
+```
+
+### Manual user-local install
+
+```bash
+git clone https://github.com/dillacorn/smtty.git
+cd smtty
+chmod +x smtty-installer
+./smtty-installer
+```
+
+The installer uses `~/.local/bin` by default. Run `smtty` after installation. Steam and Gamescope must already be installed.
+'''
+if install.strip() not in readme:
+    if readme.count(anchor) != 1:
+        raise SystemExit("README introduction anchor was not unique")
+    readme = readme.replace(anchor, anchor + install, 1)
+readme_path.write_text(readme, encoding="utf-8")
+PY
+
+chmod +x smtty
+
+cat > .github/workflows/launch-options-normalizer.yml <<'YAML'
+name: smtty tests
+
+on:
+  push:
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - tests/test-compact-ui.sh
+      - tests/test-compact-prompts.sh
+      - tests/test-profile-workflow.sh
+      - tests/test-guided-quit.sh
+      - .github/workflows/launch-options-normalizer.yml
+  pull_request:
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - tests/test-compact-ui.sh
+      - tests/test-compact-prompts.sh
+      - tests/test-profile-workflow.sh
+      - tests/test-guided-quit.sh
+      - .github/workflows/launch-options-normalizer.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check executable mode
+        run: test -x smtty
+
+      - name: Check Bash syntax
+        run: |
+          bash -n smtty
+          bash -n tests/test-launch-options-normalizer.sh
+          bash -n tests/test-compact-ui.sh
+          bash -n tests/test-compact-prompts.sh
+          bash -n tests/test-profile-workflow.sh
+          bash -n tests/test-guided-quit.sh
+
+      - name: Run test suites
+        run: |
+          bash tests/test-launch-options-normalizer.sh
+          bash tests/test-compact-ui.sh
+          bash tests/test-compact-prompts.sh
+          bash tests/test-profile-workflow.sh
+          bash tests/test-guided-quit.sh
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck
+        run: shellcheck -S error smtty tests/test-launch-options-normalizer.sh tests/test-compact-ui.sh tests/test-compact-prompts.sh tests/test-profile-workflow.sh tests/test-guided-quit.sh
+
+      - name: Check whitespace
+        run: git diff --check
+YAML
+
+rm -f .github/workflows/publish-v14.yml
+rm -f .github/workflows/release-v14-pr.yml
+rm -f .github/release-v14.sh
+
+test -x smtty
+grep -F 'SMTTY_VERSION="${SMTTY_VERSION:-v14.0}"' smtty
+grep -F 'v14.0 release notes and installation' README.md
+bash -n smtty
+bash tests/test-launch-options-normalizer.sh
+bash tests/test-compact-ui.sh
+bash tests/test-compact-prompts.sh
+bash tests/test-profile-workflow.sh
+bash tests/test-guided-quit.sh
+git diff --check
+
+git config user.name "github-actions[bot]"
+git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+git add -A
+git commit -m "release: v14.0"
+git push origin HEAD:main
+
+cat > /tmp/smtty-v14-release.md <<'EOF'
+# smtty v14.0
+
+v14.0 introduces a compact terminal interface and a faster profile workflow.
+
+## Highlights
+
+- Compact launch dashboard with aligned letter and number shortcuts.
+- Menu numbers run from top to bottom within each column.
+- Create profiles from the current profile, recommended defaults, or guided setup.
+- Draft profiles let you change only the sections you need before saving.
+- Existing profiles use the same section-based editor.
+- `B` goes back; `Q` cancels or quits setup.
+- Shorter display, refresh, PipeWire, audio, hook, and game-selection prompts.
+- Expanded tests for the dashboard, profile drafts, guided navigation, and launch-option parsing.
+
+## Requirements
+
+smtty requires Linux, Steam, and Gamescope. It reports missing dependencies but does not install them automatically.
+
+On Arch Linux:
+
+```bash
+sudo pacman -S gamescope steam
+```
+
+## Install
+
+### Arch Linux / AUR
+
+```bash
+paru -S smtty
+# or
+yay -S smtty
+```
+
+Update later with:
+
+```bash
+paru -Syu smtty
+# or
+yay -Syu smtty
+```
+
+### Manual user-local install
+
+```bash
+git clone https://github.com/dillacorn/smtty.git
+cd smtty
+chmod +x smtty-installer
+./smtty-installer
+```
+
+The installer uses `~/.local/bin` by default. Run `smtty` after installation.
+
+Update a manual installation later with:
+
+```bash
+smtty-update
+```
+
+## Important
+
+Steam cannot already be running in another session when smtty starts.
+EOF
+
+if gh release view 14.0 --repo "$repo" >/dev/null 2>&1; then
+    gh release edit 14.0 --repo "$repo" --title "smtty v14.0" --notes-file /tmp/smtty-v14-release.md
+else
+    gh release create 14.0 --repo "$repo" --target "$(git rev-parse HEAD)" --title "smtty v14.0" --notes-file /tmp/smtty-v14-release.md
+fi
+
+git push origin --delete "$trigger_branch" || true
