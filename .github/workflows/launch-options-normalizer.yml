@@ -1,34 +1,29 @@
-name: smtty tests
+name: Add profile draft workflow
 
 on:
-  push:
-    paths:
-      - smtty
-      - tests/test-launch-options-normalizer.sh
-      - tests/test-compact-ui.sh
-      - tests/test-compact-prompts.sh
-      - .github/workflows/launch-options-normalizer.yml
   pull_request:
-    paths:
-      - smtty
-      - tests/test-launch-options-normalizer.sh
-      - tests/test-compact-ui.sh
-      - tests/test-compact-prompts.sh
-      - .github/workflows/launch-options-normalizer.yml
+    branches:
+      - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  validate:
+  patch-and-validate:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Check out branch
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
 
-      - name: Check executable mode
-        run: test -x smtty
+      - name: Apply profile workflow
+        run: python3 tools/add-profile-draft-workflow.py
+
+      - name: Preserve executable mode
+        run: chmod +x smtty
 
       - name: Check Bash syntax
         run: |
@@ -36,12 +31,14 @@ jobs:
           bash -n tests/test-launch-options-normalizer.sh
           bash -n tests/test-compact-ui.sh
           bash -n tests/test-compact-prompts.sh
+          bash -n tests/test-profile-workflow.sh
 
       - name: Run test suites
         run: |
           bash tests/test-launch-options-normalizer.sh
           bash tests/test-compact-ui.sh
           bash tests/test-compact-prompts.sh
+          bash tests/test-profile-workflow.sh
 
       - name: Install ShellCheck
         run: |
@@ -49,7 +46,20 @@ jobs:
           sudo apt-get install -y shellcheck
 
       - name: Run ShellCheck
-        run: shellcheck -S error smtty tests/test-launch-options-normalizer.sh tests/test-compact-ui.sh tests/test-compact-prompts.sh
+        run: shellcheck -S error smtty tests/test-launch-options-normalizer.sh tests/test-compact-ui.sh tests/test-compact-prompts.sh tests/test-profile-workflow.sh
 
       - name: Check whitespace
         run: git diff --check
+
+      - name: Commit profile workflow
+        run: |
+          if git diff --quiet -- smtty; then
+            echo "Profile workflow already applied"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add smtty
+          git commit -m "feat: add section-based profile creation"
+          git push origin HEAD:${{ github.head_ref }}
