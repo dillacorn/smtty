@@ -1,28 +1,29 @@
-name: Refine compact terminal UI
+name: smtty tests
 
 on:
+  push:
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - tests/test-compact-ui.sh
+      - .github/workflows/launch-options-normalizer.yml
   pull_request:
-    branches:
-      - main
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - tests/test-compact-ui.sh
+      - .github/workflows/launch-options-normalizer.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-and-validate:
+  validate:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out branch
+      - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-
-      - name: Apply compact UI patch
-        run: |
-          python3 tools/apply-compact-ui.py
-          python3 tools/refine-compact-ui.py
 
       - name: Check Bash syntax
         run: |
@@ -40,21 +41,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y shellcheck
 
-      - name: Run ShellCheck error pass
+      - name: Run ShellCheck
         run: shellcheck -S error smtty tests/test-launch-options-normalizer.sh tests/test-compact-ui.sh
 
-      - name: Check whitespace errors
+      - name: Check whitespace
         run: git diff --check
-
-      - name: Commit compact UI refinements
-        run: |
-          if git diff --quiet -- smtty; then
-            echo "Compact UI is already refined"
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add smtty
-          git commit -m "refine: tighten compact dashboard labels"
-          git push origin HEAD:${{ github.head_ref }}
