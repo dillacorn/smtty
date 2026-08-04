@@ -5392,7 +5392,7 @@ smtty_print_compact_summary() {
   wayland=$(smtty_ui_on_off "${EXPOSE_WAYLAND:-0}")
 
   if (( AUDIO_SWITCH_ENABLED )); then
-    audio="switch On"
+    audio="On"
   fi
 
   if [[ -n "${PRE_CMD:-}" && -n "${POST_CMD:-}" ]]; then
@@ -5569,7 +5569,7 @@ interactive_profile_settings_editor() {
         return 0
         ;;
       *)
-        echo "Enter 1-9, 0, S, or b."
+        echo "Choose 1-9, 0, S, or B."
         ;;
     esac
   done
@@ -5587,7 +5587,7 @@ interactive_profile_menu() {
       mh_state="On"
     fi
 
-    printf 'smtty %s\n\n' "${SMTTY_VERSION#v}"
+    printf 'smtty %s\n\n' "$SMTTY_VERSION"
     smtty_print_compact_summary 1 "$mh_state"
     echo
     smtty_print_compact_actions
