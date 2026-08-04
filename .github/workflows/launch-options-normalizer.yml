@@ -1,26 +1,31 @@
-name: Finalize compact prompt tests
+name: smtty tests
 
 on:
+  push:
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - tests/test-compact-ui.sh
+      - tests/test-compact-prompts.sh
+      - .github/workflows/launch-options-normalizer.yml
   pull_request:
-    branches:
-      - main
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - tests/test-compact-ui.sh
+      - tests/test-compact-prompts.sh
+      - .github/workflows/launch-options-normalizer.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  finalize-and-validate:
+  validate:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out branch
+      - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-
-      - name: Update aligned-action assertions
-        run: python3 tools/finalize-compact-prompt-tests.py
 
       - name: Check Bash syntax
         run: |
@@ -45,16 +50,3 @@ jobs:
 
       - name: Check whitespace
         run: git diff --check
-
-      - name: Commit test finalization
-        run: |
-          if git diff --quiet -- tests/test-compact-ui.sh; then
-            echo "Compact UI assertions already finalized"
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tests/test-compact-ui.sh
-          git commit -m "test: verify padded compact action rows"
-          git push origin HEAD:${{ github.head_ref }}
