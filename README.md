@@ -26,6 +26,39 @@ chmod +x smtty-installer
 
 The installer uses `~/.local/bin` by default. Run `smtty` after installation. Steam and Gamescope must already be installed.
 
+## Uninstall
+
+### Arch Linux / AUR
+
+```bash
+paru -Rns smtty
+# or
+yay -Rns smtty
+```
+
+### Manual user-local uninstall
+
+From the cloned repository, run the installer again:
+
+```bash
+cd ~/smtty
+./smtty-installer
+```
+
+Choose `[2] Uninstall smtty`.
+
+To remove the user-local installation directly instead:
+
+```bash
+rm -f ~/.local/bin/smtty ~/.local/bin/smtty-update
+```
+
+Your profiles and settings remain in `~/.config/smtty`. Remove them only when you intentionally want a complete reset:
+
+```bash
+rm -rf ~/.config/smtty
+```
+
 
 ## Discussions and testers wanted
 I’m actively looking for testers, especially on hardware different from mine.  
