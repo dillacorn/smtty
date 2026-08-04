@@ -173,3 +173,5 @@ The installer uses `~/.local/bin` by default. Run `smtty` after installation. St
             --target "$(git rev-parse HEAD)" \
             --title "smtty v14.0" \
             --notes-file release-notes.md
+
+# Trigger publication after the workflow exists on main.
