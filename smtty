@@ -608,8 +608,13 @@ FLAG_PIPE_STEAM_INTEGRATION=0  # -e: pipe-mode only; enable gamescope Steam inte
 FLAG_MANGOHUD=0                # -M: wrap the launched command with MangoHud (mangohud --dlsym)
 SELECTED_PROFILE=""   # -c <profile>: use specific profile
 
-# back navigation
+# back / quit navigation
 BACK_SENTINEL="__SMTTY_BACK__"
+# SMTTY_GUIDED_QUIT_BEGIN
+QUIT_SENTINEL="__SMTTY_QUIT__"
+SMTTY_PROMPT_QUIT_ENABLED=0
+SMTTY_QUIT_REQUESTED=0
+# SMTTY_GUIDED_QUIT_END
 
 # ---------------- gamescope desktop-mode kill hack ----------------
 
@@ -1282,38 +1287,65 @@ esac
 
 backable_read() {
   # backable_read <var_name> <prompt>
+  # Returns 2 for back and 3 for guided-setup quit.
   local __var_name=$1
   local __prompt=$2
   local __value
+
+  if (( ${SMTTY_PROMPT_QUIT_ENABLED:-0} )); then
+    __prompt=${__prompt//b = back/b = back, q = quit}
+  fi
+
   read -rp "$__prompt" __value || exit 1
-  if [[ "${__value,,}" == "b" ]]; then
-    return 2
-  fi
-  if [[ "$__value" == "b" ]]; then
-    return 1
-  fi
+  case "${__value,,}" in
+    b)
+      return 2
+      ;;
+    q)
+      if (( ${SMTTY_PROMPT_QUIT_ENABLED:-0} )); then
+        SMTTY_QUIT_REQUESTED=1
+        return 3
+      fi
+      ;;
+  esac
+
   printf -v "$__var_name" '%s' "$__value"
   return 0
 }
 
 read_one_key() {
   # read_one_key <var_name> <prompt>
-  # Reads a single keypress (no Enter). Returns 1 if key was 'b'.
+  # Reads one key. Returns 1 for back and 3 for guided-setup quit.
   local __var_name=$1
   local __prompt=$2
   local __ch=""
+
+  if (( ${SMTTY_PROMPT_QUIT_ENABLED:-0} )); then
+    __prompt=${__prompt//b = back/b = back, q = quit}
+  fi
+
   printf '%s' "$__prompt"
   IFS= read -rsn1 __ch || exit 1
-  if [[ "${__ch}" == $'\r' || "${__ch}" == $'\n' ]]; then
+  if [[ "${__ch}" == $'' || "${__ch}" == $'
+' ]]; then
     __ch=""
   fi
-  if [[ "${__ch}" == "B" ]]; then
-    __ch="b"
-  fi
-  printf '\n'
+
+  case "$__ch" in
+    B) __ch="b" ;;
+    Q) __ch="q" ;;
+  esac
+
+  printf '
+'
   if [[ "$__ch" == "b" ]]; then
     return 1
   fi
+  if [[ "$__ch" == "q" ]] && (( ${SMTTY_PROMPT_QUIT_ENABLED:-0} )); then
+    SMTTY_QUIT_REQUESTED=1
+    return 3
+  fi
+
   printf -v "$__var_name" '%s' "$__ch"
   return 0
 }
@@ -1463,13 +1495,21 @@ read_default() {
   local def=$2
   local val
   if ! backable_read val "$prompt [$def] (b = back): "; then
-    printf '%s\n' "$BACK_SENTINEL"
+    if (( ${SMTTY_QUIT_REQUESTED:-0} )); then
+      printf '%s
+' "$QUIT_SENTINEL"
+    else
+      printf '%s
+' "$BACK_SENTINEL"
+    fi
     return 0
   fi
   if [[ -z "$val" ]]; then
-    printf '%s\n' "$def"
+    printf '%s
+' "$def"
   else
-    printf '%s\n' "$val"
+    printf '%s
+' "$val"
   fi
 }
 
@@ -2492,15 +2532,21 @@ choose_resolution_profile() {
   custom_resolution_prompt() {
     local w h
     while :; do
-      read -r -p "Width [${NATIVE_W}] (q = cancel): " w
-      [[ $w == "q" || $w == "Q" ]] && return 1
+      read -r -p "Width [${NATIVE_W}] (b = back, q = quit): " w
+      case "${w,,}" in
+        b) return 1 ;;
+        q) SMTTY_QUIT_REQUESTED=1; return 1 ;;
+      esac
       w="${w:-$NATIVE_W}"
       [[ $w =~ ^[0-9]+$ ]] && (( w >= 320 && w <= 16384 )) && break
       echo "Invalid width: $w"
     done
     while :; do
-      read -r -p "Height [${NATIVE_H}] (q = cancel): " h
-      [[ $h == "q" || $h == "Q" ]] && return 1
+      read -r -p "Height [${NATIVE_H}] (b = back, q = quit): " h
+      case "${h,,}" in
+        b) return 1 ;;
+        q) SMTTY_QUIT_REQUESTED=1; return 1 ;;
+      esac
       h="${h:-$NATIVE_H}"
       [[ $h =~ ^[0-9]+$ ]] && (( h >= 240 && h <= 16384 )) && break
       echo "Invalid height: $h"
@@ -2621,6 +2667,10 @@ choose_resolution_profile() {
 choose_gamescope_rate() {
   local val
   val=$(read_default "Display refresh (Hz, 0 = auto)" "$G_FPS")
+  if [[ "$val" == "$QUIT_SENTINEL" ]]; then
+    SMTTY_QUIT_REQUESTED=1
+    return 1
+  fi
   if [[ "$val" == "$BACK_SENTINEL" ]]; then
     return 1
   fi
@@ -2653,6 +2703,10 @@ choose_vrr_hdr_and_steamos() {
   local vrr
   while :; do
     vrr=$(read_default "VRR (0 = off, 1 = on)" "$ADAPTIVE_SYNC")
+    if [[ "$vrr" == "$QUIT_SENTINEL" ]]; then
+      SMTTY_QUIT_REQUESTED=1
+      return 1
+    fi
     if [[ "$vrr" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
@@ -2670,6 +2724,10 @@ choose_vrr_hdr_and_steamos() {
   local hdr
   while :; do
     hdr=$(read_default "HDR (0 = off, 1 = on)" "$ENABLE_GAMESCOPE_HDR")
+    if [[ "$hdr" == "$QUIT_SENTINEL" ]]; then
+      SMTTY_QUIT_REQUESTED=1
+      return 1
+    fi
     if [[ "$hdr" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
@@ -2700,6 +2758,10 @@ choose_vrr_hdr_and_steamos() {
     fi
 
     nits=$(read_default "HDR target nits" "$default_nits")
+    if [[ "$nits" == "$QUIT_SENTINEL" ]]; then
+      SMTTY_QUIT_REQUESTED=1
+      return 1
+    fi
     if [[ "$nits" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
@@ -2718,6 +2780,10 @@ choose_vrr_hdr_and_steamos() {
   local fg
   while :; do
     fg=$(read_default "Cursor grab (0 = off, 1 = on)" "$FORCE_GRAB_CURSOR")
+    if [[ "$fg" == "$QUIT_SENTINEL" ]]; then
+      SMTTY_QUIT_REQUESTED=1
+      return 1
+    fi
     if [[ "$fg" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
@@ -2736,6 +2802,10 @@ choose_vrr_hdr_and_steamos() {
   local ew
   while :; do
     ew=$(read_default "Expose Wayland (0 = off, 1 = on)" "$EXPOSE_WAYLAND")
+    if [[ "$ew" == "$QUIT_SENTINEL" ]]; then
+      SMTTY_QUIT_REQUESTED=1
+      return 1
+    fi
     if [[ "$ew" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
@@ -2756,6 +2826,10 @@ choose_vrr_hdr_and_steamos() {
     local lt
     while :; do
       lt=$(read_default "Low-latency tearing (0 = off, 1 = on)" "$LOW_LATENCY_TEARING")
+      if [[ "$lt" == "$QUIT_SENTINEL" ]]; then
+        SMTTY_QUIT_REQUESTED=1
+        return 1
+      fi
       if [[ "$lt" == "$BACK_SENTINEL" ]]; then
         return 1
       fi
@@ -2794,6 +2868,10 @@ choose_pipewire_debug() {
 
   local sel
   sel=$(read_default "Choose (1-5)" "$default_choice")
+  if [[ "$sel" == "$QUIT_SENTINEL" ]]; then
+    SMTTY_QUIT_REQUESTED=1
+    return 1
+  fi
   if [[ "$sel" == "$BACK_SENTINEL" ]]; then
     return 1
   fi
@@ -2825,6 +2903,10 @@ choose_pipewire_latency() {
   local val
   while :; do
     val="$(read_default "Latency" "$cur")"
+    if [[ "$val" == "$QUIT_SENTINEL" ]]; then
+      SMTTY_QUIT_REQUESTED=1
+      return 1
+    fi
     if [[ "$val" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
@@ -2857,6 +2939,10 @@ choose_perf_env_preset() {
   local val
   while :; do
     val="$(read_default "Choose (0/1)" "$cur")"
+    if [[ "$val" == "$QUIT_SENTINEL" ]]; then
+      SMTTY_QUIT_REQUESTED=1
+      return 1
+    fi
     if [[ "$val" == "$BACK_SENTINEL" ]]; then
       return 1
     fi
@@ -2885,6 +2971,10 @@ choose_ld_preload_mode() {
 
   local sel
   sel=$(read_default "Choose (1-2)" "$default_choice")
+  if [[ "$sel" == "$QUIT_SENTINEL" ]]; then
+    SMTTY_QUIT_REQUESTED=1
+    return 1
+  fi
   if [[ "$sel" == "$BACK_SENTINEL" ]]; then
     return 1
   fi
@@ -2916,6 +3006,10 @@ choose_audio_switch() {
 
   local en
   en=$(read_default "Switch output while running (0 = off, 1 = on)" 0)
+  if [[ "$en" == "$QUIT_SENTINEL" ]]; then
+    SMTTY_QUIT_REQUESTED=1
+    return 1
+  fi
   if [[ "$en" == "$BACK_SENTINEL" ]]; then
     return 1
   fi
@@ -3004,6 +3098,10 @@ choose_pre_post_commands() {
 
   local pre
   pre=$(read_default "Pre command" "${PRE_CMD:-}")
+  if [[ "$pre" == "$QUIT_SENTINEL" ]]; then
+    SMTTY_QUIT_REQUESTED=1
+    return 1
+  fi
   if [[ "$pre" == "$BACK_SENTINEL" ]]; then
     return 1
   fi
@@ -3011,6 +3109,10 @@ choose_pre_post_commands() {
 
   local post
   post=$(read_default "Post command" "${POST_CMD:-}")
+  if [[ "$post" == "$QUIT_SENTINEL" ]]; then
+    SMTTY_QUIT_REQUESTED=1
+    return 1
+  fi
   if [[ "$post" == "$BACK_SENTINEL" ]]; then
     return 1
   fi
@@ -4866,6 +4968,7 @@ launch_gamescope_session() {
 
 interactive_new_config() {
   local from_menu=${1:-0}
+  local previous_quit_mode=${SMTTY_PROMPT_QUIT_ENABLED:-0}
 
   CURRENT_PROFILE=""
   PRE_CMD=""
@@ -4875,66 +4978,177 @@ interactive_new_config() {
 
   G_FPS=0
   G_FPS_BG=0
+  SMTTY_PROMPT_QUIT_ENABLED=1
+  SMTTY_QUIT_REQUESTED=0
 
   local step=1
   while :; do
+    SMTTY_QUIT_REQUESTED=0
+
     case "$step" in
       1)
         if ! detect_steam_installations; then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          if (( SMTTY_QUIT_REQUESTED )); then
+            SMTTY_QUIT_REQUESTED=0
+            echo "Guided setup cancelled."
+            return 1
+          fi
           if (( from_menu )); then
             return 1
           fi
           echo "Aborting interactive setup."
-          exit 0
+          return 1
         fi
         if ! choose_steam_launch_mode; then
-          if (( from_menu )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          if (( SMTTY_QUIT_REQUESTED )); then
+            SMTTY_QUIT_REQUESTED=0
+            echo "Guided setup cancelled."
             return 1
           fi
-          echo "Aborting interactive setup."
-          exit 0
+          return 1
         fi
         step=2
         ;;
       2)
-        if choose_drm_output; then step=3; else step=1; fi
+        if choose_drm_output; then
+          step=3
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
+        else
+          step=1
+        fi
         ;;
       3)
-        if choose_resolution_profile; then step=4; else step=2; fi
+        if choose_resolution_profile; then
+          step=4
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
+        else
+          step=2
+        fi
         ;;
       4)
-        if choose_gamescope_rate; then step=5; else step=3; fi
+        if choose_gamescope_rate; then
+          step=5
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
+        else
+          step=3
+        fi
         ;;
       5)
-        if choose_vrr_hdr_and_steamos; then step=6; else step=4; fi
+        if choose_vrr_hdr_and_steamos; then
+          step=6
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
+        else
+          step=4
+        fi
         ;;
       6)
-        if choose_pipewire_debug; then step=7; else step=5; fi
+        if choose_pipewire_debug; then
+          step=7
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
+        else
+          step=5
+        fi
         ;;
       7)
-        if choose_pipewire_latency; then step=8; else step=6; fi
+        if choose_pipewire_latency; then
+          step=8
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
+        else
+          step=6
+        fi
         ;;
       8)
-        if choose_perf_env_preset; then step=9; else step=7; fi
+        if choose_perf_env_preset; then
+          step=9
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
+        else
+          step=7
+        fi
         ;;
       9)
-        if choose_ld_preload_mode; then step=10; else step=8; fi
+        if choose_ld_preload_mode; then
+          step=10
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
+        else
+          step=8
+        fi
         ;;
       10)
-        if choose_audio_switch; then step=11; else step=9; fi
+        if choose_audio_switch; then
+          step=11
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
+        else
+          step=9
+        fi
         ;;
       11)
-        if choose_pre_post_commands; then step=12; else step=10; fi
+        if choose_pre_post_commands; then
+          step=12
+        elif (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
+        else
+          step=10
+        fi
         ;;
       12)
-        if ! save_config; then
-          step=11
-          continue
+        if save_config; then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          load_profile_by_name "$CURRENT_PROFILE" >/dev/null 2>&1 || HAVE_CONFIG=1
+          return 0
         fi
-        load_profile_by_name "$CURRENT_PROFILE" >/dev/null 2>&1 || HAVE_CONFIG=1
-        return 0
+        if (( SMTTY_QUIT_REQUESTED )); then
+          SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+          SMTTY_QUIT_REQUESTED=0
+          echo "Guided setup cancelled."
+          return 1
+        fi
+        step=11
         ;;
       *)
+        SMTTY_PROMPT_QUIT_ENABLED=$previous_quit_mode
+        SMTTY_QUIT_REQUESTED=0
         return 1
         ;;
     esac
