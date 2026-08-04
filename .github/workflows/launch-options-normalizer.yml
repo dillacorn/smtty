@@ -1,46 +1,38 @@
-name: Renumber compact menu shortcuts
+name: smtty tests
 
 on:
+  push:
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - tests/test-compact-ui.sh
+      - tests/test-compact-prompts.sh
+      - tests/test-profile-workflow.sh
+      - tests/test-guided-quit.sh
+      - .github/workflows/launch-options-normalizer.yml
   pull_request:
-    branches:
-      - main
+    paths:
+      - smtty
+      - tests/test-launch-options-normalizer.sh
+      - tests/test-compact-ui.sh
+      - tests/test-compact-prompts.sh
+      - tests/test-profile-workflow.sh
+      - tests/test-guided-quit.sh
+      - .github/workflows/launch-options-normalizer.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-and-validate:
+  validate:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out branch
+      - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
 
-      - name: Fix duplicate Hooks bootstrap matches
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("tools/renumber-compact-menus.py")
-          text = path.read_text(encoding="utf-8")
-          old = "        ('smtty_print_action_row \"[H] [0]\" \"Hooks\"', 'smtty_print_action_row \"[H] [10]\" \"Hooks\"', \"new hooks label\"),\n"
-          new = (
-              "        ('smtty_print_action_row \"[H] [0]\" \"Hooks\" \"[S]\" \"Save\" \"[Q]\" \"Cancel\"', 'smtty_print_action_row \"[H] [10]\" \"Hooks\" \"[S]\" \"Save\" \"[Q]\" \"Cancel\"', \"new hooks label\"),\n"
-              "        ('smtty_print_action_row \"[H] [0]\" \"Hooks\" \"[S]\" \"Save\" \"[B]\" \"Back\"', 'smtty_print_action_row \"[H] [10]\" \"Hooks\" \"[S]\" \"Save\" \"[B]\" \"Back\"', \"edit hooks label\"),\n"
-          )
-          if text.count(old) != 1:
-              raise SystemExit("duplicate Hooks bootstrap pattern did not match once")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
-          PY
-
-      - name: Renumber compact menus
-        run: python3 tools/renumber-compact-menus.py
-
-      - name: Preserve executable mode
-        run: chmod +x smtty
+      - name: Check executable mode
+        run: test -x smtty
 
       - name: Check Bash syntax
         run: |
@@ -69,16 +61,3 @@ jobs:
 
       - name: Check whitespace
         run: git diff --check
-
-      - name: Commit menu renumbering
-        run: |
-          if git diff --quiet -- smtty tests/test-compact-ui.sh tests/test-compact-prompts.sh tests/test-profile-workflow.sh; then
-            echo "Compact menus already renumbered"
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add smtty tests/test-compact-ui.sh tests/test-compact-prompts.sh tests/test-profile-workflow.sh
-          git commit -m "refine: order compact menu numbers"
-          git push origin HEAD:${{ github.head_ref }}
